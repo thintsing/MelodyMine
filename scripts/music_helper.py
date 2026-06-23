@@ -1013,6 +1013,7 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
 def _ytdlp_download(
     python, url_or_query, output, fmt, bitrate=None,
     embed_thumbnail=True, proxy=None, bili_ua=False, index=1,
+    cookies=None,
 ):
     """Run yt-dlp to download and convert audio. Returns True on success."""
     cmd = [
@@ -1046,6 +1047,9 @@ def _ytdlp_download(
 
     if proxy:
         cmd.extend(["--proxy", proxy])
+
+    if cookies:
+        cmd.extend(["--cookies", cookies])
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -1268,7 +1272,7 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
 def cmd_download(
     query, platform="auto", fmt="mp3", output=None,
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
-    no_metadata=False,
+    no_metadata=False, cookies=None,
 ):
     """Download a song with automatic platform selection and fallback."""
     py, _, _ = ensure_deps()
@@ -1306,7 +1310,7 @@ def cmd_download(
             print("  Falling back to YouTube...")
             return _do_youtube_download(
                 py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-                no_metadata=no_metadata,
+                no_metadata=no_metadata, cookies=cookies,
             )
 
         # Step 2: Pick result and download
@@ -1320,7 +1324,7 @@ def cmd_download(
 
         ok = _ytdlp_download(
             py, url, output, fmt, bitrate, embed_thumbnail,
-            bili_ua=True, index=1,
+            bili_ua=True, index=1, cookies=cookies,
         )
         if ok:
             if not no_metadata:
@@ -1334,20 +1338,20 @@ def cmd_download(
         print("  Falling back to YouTube...")
         return _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-            no_metadata=no_metadata,
+            no_metadata=no_metadata, cookies=cookies,
         )
 
     # ── YouTube ──
     else:
         return _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-            no_metadata=no_metadata,
+            no_metadata=no_metadata, cookies=cookies,
         )
 
 
 def _do_youtube_download(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-    no_metadata=False,
+    no_metadata=False, cookies=None,
 ):
     """Download from YouTube via yt-dlp search + download.
     Proxy is optional — users outside China don't need it.
@@ -1362,12 +1366,14 @@ def _do_youtube_download(
         print(f"  Proxy    : {proxy}")
     else:
         print(f"  Proxy    : none (direct connection)")
+    if cookies:
+        print(f"  Cookies  : {cookies}")
     print("=" * 60)
     print()
 
     ok = _ytdlp_download(
         py, search_query, output, fmt, bitrate, embed_thumbnail,
-        proxy=proxy, index=index,
+        proxy=proxy, index=index, cookies=cookies,
     )
     if ok:
         if not no_metadata:
@@ -1496,6 +1502,7 @@ Examples:
     p_dl.add_argument("--format", default="mp3", choices=["mp3", "flac", "m4a", "opus", "wav", "vorbis"])
     p_dl.add_argument("--output", default=None, help="Output dir (default: ~/Music/MelodyMine)")
     p_dl.add_argument("--proxy", default=None, help="Proxy for YouTube (e.g. socks5://host:port)")
+    p_dl.add_argument("--cookies", default=None, help="cookies.txt path for YouTube sign-in/bot checks")
     p_dl.add_argument("--bitrate", default=None, help="Audio bitrate (e.g. 320K)")
     p_dl.add_argument("--index", type=int, default=1, help="Search result index (1-based)")
     p_dl.add_argument("--no-thumbnail", action="store_true")
@@ -1519,6 +1526,7 @@ Examples:
             fmt=args.format,
             output=args.output,
             proxy=args.proxy,
+            cookies=args.cookies,
             bitrate=args.bitrate,
             index=args.index,
             embed_thumbnail=not args.no_thumbnail,
