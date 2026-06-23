@@ -1,0 +1,11 @@
+# MelodyMine — Python Dependencies
+# Auto-installed by: python music_helper.py setup
+yt-dlp>=2024.0.0
+requests>=2.28.0
+pysocks>=1.7.1
+
+# FFmpeg (no system install needed — this pip package bundles a static binary)
+imageio-ffmpeg>=0.4.9
+
+# Optional: Spotify URL support (has known bugs with SpotipyFree)
+# spotdl>=4.2.0
