@@ -18,7 +18,7 @@ MelodyMine is a self-bootstrapping music downloader. Give it a song name, and it
 
 ```bash
 # 1. Clone
-git clone https://github.com/YOUR_USERNAME/MelodyMine.git
+git clone https://github.com/thintsing/MelodyMine.git
 cd MelodyMine
 
 # 2. Setup (installs all dependencies automatically)
@@ -149,13 +149,34 @@ MelodyMine handles this automatically:
 2. If blocked, try `pip install --user`
 3. If still blocked, create an isolated venv at `~/.cache/melodymine-venv`
 
-## For WorkBuddy Users
+## Use with AI Assistants
 
-MelodyMine ships with a `SKILL.md` that makes it work as a [WorkBuddy](https://workbuddy.ai) skill. To install:
+MelodyMine ships with a `SKILL.md` — a declarative skill definition that tells any AI assistant how to use this tool. It works with **WorkBuddy**, **OpenClaw**, **Hermes**, and any platform that supports file-based skill definitions.
 
-1. Copy the `MelodyMine` folder to `~/.workbuddy/skills/melodymine/`
-2. Restart WorkBuddy
-3. Just say "下载周杰伦的稻香" — WorkBuddy will handle the rest
+### Install as a skill
+
+Copy the `MelodyMine` folder to your AI assistant's skills directory:
+
+| Platform | Path |
+|----------|------|
+| WorkBuddy | `~/.workbuddy/skills/melodymine/` |
+| OpenClaw | `~/.openclaw/skills/melodymine/` |
+| Hermes | `~/.hermes/skills/melodymine/` |
+| Custom | Place wherever your platform reads skill definitions |
+
+Then restart your AI assistant and just say:
+
+> 下载周杰伦的稻香
+
+The AI will handle platform selection, download, metadata tagging, and file renaming — all automatically.
+
+### Standalone CLI usage
+
+Don't have an AI assistant? MelodyMine works perfectly as a plain CLI tool:
+
+```bash
+python scripts/music_helper.py download "周杰伦 稻香"
+```
 
 ## Troubleshooting
 
@@ -173,7 +194,7 @@ MelodyMine ships with a `SKILL.md` that makes it work as a [WorkBuddy](https://w
 MelodyMine/
 ├── README.md                        ← You are here
 ├── LICENSE                          ← MIT
-├── SKILL.md                         ← WorkBuddy skill definition
+├── SKILL.md                         ← AI assistant skill definition (WorkBuddy / OpenClaw / Hermes)
 ├── .gitignore
 ├── scripts/
 │   ├── music_helper.py              ← Main script (setup/check/search/download)

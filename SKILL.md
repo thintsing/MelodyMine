@@ -5,6 +5,8 @@ description: "Download music from Bilibili, YouTube, and Spotify. Triggers when 
 
 # MelodyMine Music Downloader Skill
 
+> **Platform-agnostic** — Works with WorkBuddy, OpenClaw, Hermes, and any AI assistant that supports file-based skill definitions.
+>
 > **Execute, Don't Explain** — When triggered, directly run download commands. Don't just explain how to use the tool.
 
 ## Trigger Conditions
@@ -54,7 +56,7 @@ python3 music_helper.py setup
 ```
 
 This works on **Windows, macOS, and Linux**. It will:
-1. Find a Python interpreter (scans PATH, WorkBuddy venv, pyenv, conda, Homebrew, common install locations)
+1. Find a Python interpreter (scans PATH, AI assistant venvs, pyenv, conda, Homebrew, common install locations)
 2. Auto-install pip packages: `yt-dlp`, `requests`, `pysocks`, `imageio-ffmpeg`
 3. Handle PEP 668 (externally-managed-environment on modern Debian/Ubuntu/Fedora) by falling back to `--user` or creating an isolated venv
 4. Locate ffmpeg (system PATH → or auto-installed `imageio-ffmpeg` bundled binary)
@@ -272,9 +274,9 @@ Works on **Windows, macOS, and Linux** (including headless servers).
 | spotdl | Auto `pip install` on first Spotify URL | Spotify URL downloads (optional) |
 
 **Python detection covers**:
-- Windows: `py`, `python`, LOCALAPPDATA, ProgramFiles, WorkBuddy venv
-- macOS: Homebrew (`/opt/homebrew`), python.org framework, `/usr/local/bin`, WorkBuddy venv
-- Linux: `/usr/bin/python3`, pyenv, conda/miniconda, asdf, `~/.local/bin`, WorkBuddy venv
+- Windows: `py`, `python`, LOCALAPPDATA, ProgramFiles, AI assistant venv (e.g. WorkBuddy)
+- macOS: Homebrew (`/opt/homebrew`), python.org framework, `/usr/local/bin`, AI assistant venv
+- Linux: `/usr/bin/python3`, pyenv, conda/miniconda, asdf, `~/.local/bin`, AI assistant venv
 
 **PEP 668 (externally-managed-environment)**:
 On modern Debian/Ubuntu/Fedora, `pip install` into system Python is blocked.
