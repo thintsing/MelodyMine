@@ -1,15 +1,16 @@
 # MelodyMine
 
-Download music from Bilibili, YouTube, and Spotify URLs with automatic search, audio conversion, metadata cleanup, and cross-platform dependency setup.
+Download music from Bilibili, YouTube, and Spotify URLs with automatic search, audio conversion, metadata cleanup, and zero-config dependency setup.
 
-MelodyMine can be used as a standalone CLI or as a file-based skill for AI assistants such as WorkBuddy, OpenClaw, and Hermes.
+MelodyMine runs as a standalone CLI or as a file-based skill for AI assistants — WorkBuddy, Hermes, and OpenClaw. It auto-detects each platform's bundled Python runtime (WorkBuddy/Hermes ship one; OpenClaw users install Python once), so first-run setup is a single command on any of them.
 
 ## Features
 
 - Bilibili for Chinese music queries, using direct WBI search plus `yt-dlp`.
 - YouTube for English and international music queries.
 - Spotify URL downloads through spotDL.
-- Automatic setup for Python packages and ffmpeg fallback via `imageio-ffmpeg`.
+- Automatic, zero-config setup: auto-detects the host assistant's Python runtime (WorkBuddy/Hermes bundled, uv-managed, or system), installs pip packages, and falls back to `imageio-ffmpeg` for ffmpeg.
+- Shared dependency layer (`melodymine_common.py`) with a unified venv — dependencies install once and are reused across both helpers and every supported assistant.
 - Metadata cleanup with title, artist, album, cover, and `Artist - Title` renaming.
 - Proxy and cookies support for restricted networks or YouTube bot checks.
 
