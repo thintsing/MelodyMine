@@ -1554,17 +1554,37 @@ def cmd_download(
         debug_log("route: spotify → spotdl")
         return _download_via_spotdl(py, query, fmt, output, proxy, bitrate)
 
-    # ── NetEase URL → resolve to song name → Bilibili/YouTube ──
+    # ── NetEase URL → resolve → try direct audio → fallback to Bilibili/YouTube ──
     if is_netease_url(query):
-        debug_log("route: netease url → resolve → bilibili/youtube")
+        debug_log("route: netease url → resolve → direct/bilibili/youtube")
         print("[NetEase] Resolving song info from URL...")
+        song_id = extract_netease_song_id(query)
         resolved = resolve_netease_url(query, python=py)
         if resolved:
             print(f"  Resolved: {resolved}")
-            query = resolved
         else:
             print("  [!] Could not resolve NetEase URL, using raw URL as query")
-        # Fall through to normal platform selection with resolved query
+
+        # Tier 1: try NetEase direct audio (works for free/non-copyrighted songs)
+        if not output:
+            output = DEFAULT_OUTPUT
+        if song_id and resolved:
+            ok = _netease_direct_download(song_id, resolved, output, fmt, bitrate, py)
+            if ok:
+                if not no_metadata:
+                    enhance_metadata(py, resolved, "", output)
+                print(f"\n[OK] Download complete (via NetEase direct)!")
+                print(f"     Files saved to: {output}")
+                return {
+                    "ok": True, "platform": "netease", "engine": "netease-outer-url",
+                    "query": resolved, "source_url": query,
+                    "format": fmt, "output": output,
+                    "metadata": not no_metadata, "fallback": "netease-direct",
+                }
+            print("    Falling back to Bilibili/YouTube search...")
+
+        # Tier 2: fall through to normal Bilibili/YouTube pipeline
+        query = resolved or query
 
     # ── Direct download URLs (YouTube/SoundCloud/Bandcamp) → yt-dlp directly ──
     if is_direct_download_url(query):
@@ -1791,6 +1811,111 @@ def _download_direct(
     else:
         print("  → Check the URL is valid and publicly accessible.")
     sys.exit(1)
+
+
+def _netease_direct_download(song_id, song_name, output, fmt, bitrate, python):
+    """Try to download audio directly from NetEase's outer URL.
+
+    NetEase exposes a 302 redirect endpoint:
+      https://music.163.com/song/media/outer/url?id=<id>.mp3
+    Free songs redirect to a CDN audio file; copyrighted songs redirect to
+    a 404 page. This function returns True on success, False if the song is
+    restricted or unavailable.
+    """
+    import urllib.request
+    import urllib.error
+
+    outer_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+    print("    ↳ Trying NetEase direct audio...")
+
+    # Follow the redirect to check if we get audio or a 404 page
+    req = urllib.request.Request(outer_url)
+    req.add_header("User-Agent", BILI_UA)
+    req.add_header("Referer", "https://music.163.com/")
+    try:
+        resp = urllib.request.urlopen(req, timeout=15)
+        final_url = resp.url
+        if "404" in final_url:
+            print("    [!] NetEase direct: song is restricted (404 redirect)")
+            return False
+        content_type = resp.headers.get("Content-Type", "")
+        if "audio" not in content_type and "octet-stream" not in content_type:
+            print(f"    [!] NetEase direct: not audio (content-type: {content_type})")
+            return False
+    except Exception as e:
+        print(f"    [!] NetEase direct: {e}")
+        return False
+
+    # We have a real audio stream — download it
+    os.makedirs(output, exist_ok=True)
+    raw_path = os.path.join(output, f"_netease_raw_{song_id}.mp3")
+    print(f"    Downloading from NetEase CDN...")
+    try:
+        req2 = urllib.request.Request(final_url)
+        req2.add_header("User-Agent", BILI_UA)
+        req2.add_header("Referer", "https://music.163.com/")
+        with urllib.request.urlopen(req2, timeout=120) as r:
+            with open(raw_path, "wb") as f:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+    except Exception as e:
+        print(f"    [!] NetEase download failed: {e}")
+        if os.path.isfile(raw_path):
+            os.remove(raw_path)
+        return False
+
+    size_mb = os.path.getsize(raw_path) / (1024 * 1024)
+    if size_mb < 0.1:
+        os.remove(raw_path)
+        print("    [!] NetEase direct: file too small (<100KB)")
+        return False
+    print(f"    Downloaded: {size_mb:.1f} MB")
+
+    # Convert if needed
+    ffmpeg_exe = find_ffmpeg(python)
+    if not ffmpeg_exe or fmt == "mp3":
+        final_path = os.path.join(output, f"{sanitize_filename(song_name)}.mp3")
+        if raw_path != final_path:
+            os.rename(raw_path, final_path)
+        print(f"    Saved: {os.path.basename(final_path)}")
+        return True
+
+    print(f"    Converting to {fmt}...")
+    final_path = os.path.join(output, f"{sanitize_filename(song_name)}.{fmt}")
+    convert_cmd = [ffmpeg_exe, "-y", "-i", raw_path, "-codec:a"]
+    if fmt == "flac":
+        convert_cmd.append("flac")
+    elif fmt == "opus":
+        convert_cmd.append("libopus")
+    elif fmt == "vorbis":
+        convert_cmd.append("libvorbis")
+    elif fmt == "wav":
+        convert_cmd.append("pcm_s16le")
+    elif fmt == "m4a":
+        convert_cmd.append("aac")
+    else:
+        convert_cmd.append("libmp3lame")
+    if bitrate and fmt == "mp3":
+        convert_cmd.extend(["-b:a", str(bitrate)])
+    convert_cmd.append(final_path)
+    try:
+        result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=180,
+                                encoding="utf-8", errors="replace")
+        if result.returncode != 0:
+            print(f"    [!] FFmpeg failed: {result.stderr[:200]}")
+            return False
+    except Exception as e:
+        print(f"    [!] FFmpeg error: {e}")
+        return False
+    finally:
+        if os.path.isfile(raw_path):
+            os.remove(raw_path)
+
+    print(f"    Converted: {os.path.getsize(final_path) / (1024 * 1024):.1f} MB ({fmt})")
+    return True
 
 
 def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):

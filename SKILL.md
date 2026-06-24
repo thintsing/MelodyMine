@@ -143,7 +143,7 @@ python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookie
 | Chinese query | Bilibili | No proxy expected. If yt-dlp hits 412, falls back to Bilibili API direct (Tier 2), then YouTube. |
 | English/non-Chinese query | YouTube | Try direct first. Add proxy only after network failure. |
 | Spotify URL | spotDL through `music_helper.py` | May need proxy in restricted regions. For playlist sync use `spotify_helper.py`. |
-| NetEase URL (`music.163.com/song?id=xxx`) | Resolved to song name, then Bilibili/YouTube | The URL is translated to "Artist Title" via NetEase API, then downloaded via the normal pipeline. |
+| NetEase URL (`music.163.com/song?id=xxx`) | NetEase direct → Bilibili/YouTube | Resolves song name via NetEase API, tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube if copyrighted. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct download | No search step — yt-dlp downloads the URL directly. YouTube may need proxy/cookies. |
 
 ## Error Handling

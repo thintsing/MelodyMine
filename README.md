@@ -126,7 +126,7 @@ Options:
 | Chinese query | Bilibili | No proxy expected. Falls back to YouTube if needed. |
 | English or non-Chinese query | YouTube | Try direct first; add proxy after network failure. |
 | Spotify URL | spotDL | Auto-installs spotDL on first use if possible. |
-| NetEase URL (`music.163.com`) | Resolved → Bilibili/YouTube | Song name extracted via NetEase API, then downloaded via the normal pipeline. |
+| NetEase URL (`music.163.com`) | NetEase direct → Bilibili/YouTube | Song name extracted via NetEase API. Tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube if copyrighted. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct | No search step — downloads the URL directly. YouTube may need `--proxy`. |
 
 ## Advanced Spotify Operations
