@@ -578,21 +578,31 @@ def _clean_artist(name):
     return name.strip()
 
 
+# English articles that should be grouped with the following token as the
+# artist name, e.g. "The Weeknd Blinding Lights" -> ("The Weeknd", "Blinding Lights").
+_ARTICLES = {"the", "a", "an"}
+
+
 def parse_search_query(query):
     """
     Parse a user search query to extract artist and title.
-    "周杰伦 稻香"       -> ("周杰伦", "稻香")
+    "周杰伦 稻香"                -> ("周杰伦", "稻香")
     "The Weeknd Blinding Lights" -> ("The Weeknd", "Blinding Lights")
-    "稻香"               -> (None, "稻香")
+    "稻香"                        -> (None, "稻香")
 
     For Chinese: first token = artist, rest = title
-    For English: first token(s) before a capitalised word = artist
+    For English: if the first token is an article (The/A/An), group it with the
+    next token as the artist name.
     """
     parts = query.strip().split()
     if len(parts) >= 2:
-        # Simple heuristic: first part = artist, rest = title
         artist = parts[0]
         title = " ".join(parts[1:])
+        # Group a leading English article with the next token so band names like
+        # "The Weeknd", "The Beatles", "A Tribe Called Quest" stay intact.
+        if artist.lower() in _ARTICLES and len(parts) >= 3:
+            artist = f"{parts[0]} {parts[1]}"
+            title = " ".join(parts[2:])
         return artist, title
     return None, query.strip()
 
@@ -732,15 +742,15 @@ def resolve_netease_url(url, python=None):
     return None
 
 
-# Noise words to strip from Bilibili titles
-_NOISE_PATTERNS = [
+# Noise patterns to strip from Bilibili titles (pre-compiled for performance).
+_NOISE_PATTERNS = [re.compile(p) for p in [
     r"完整版", r"无损音质", r"无损", r"高清", r"超清", r"高品质",
     r"官方MV", r"官方", r"\bMV\b", r"\bOfficial\b", r"\bHD\b",
     r"\bLyrics?\b", r"歌词版?", r"歌词", r"现场版?", r"\bLive\b",
     r"纯音乐", r"伴奏", r"翻唱", r"字幕版?", r"音频版?", r"音频",
     r"\(.*?\)", r"（.*?）", r"【.*?】", r"［.*?］",
     r"\d{4}", r"｜.*", r"\|.*",
-]
+]]
 
 
 def parse_bili_title(title):
@@ -922,7 +932,7 @@ def itunes_search(query, limit=5):
     return results
 
 
-def enhance_metadata(python, search_query, bili_title, output_dir):
+def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbnail=True):
     """
     Post-download metadata enhancement (multi-source strategy).
 
@@ -930,6 +940,8 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
     Layer 2: MusicBrainz + NetEase + iTunes queried concurrently, each scored
     Layer 3: Parse Bilibili video title (fallback for artist/title only)
     The highest-scoring source wins; ties broken by cover availability.
+    When ``embed_thumbnail`` is False, cover art is neither downloaded nor
+    embedded (respects --no-thumbnail).
     Never raises — metadata enhancement is best-effort.
     """
     filepath = find_downloaded_file(output_dir)
@@ -956,64 +968,49 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
     # MusicBrainz + NetEase + iTunes run in parallel to cut wait time.
     print(f"  Looking up album info (MusicBrainz + NetEase + iTunes in parallel)...")
 
-    def _score_mb(results, artist, title):
-        best_score, best_data = -1, None
-        for r in results:
-            r_artist = r.get("artist", "").strip()
-            r_title = r.get("title", "").strip()
-            score = 0
-            if _norm_cn(r_artist) == _norm_cn(artist):
-                score += 20
-            elif _norm_cn(artist) in _norm_cn(r_artist):
-                score += 8
-            if _norm_cn(r_title) == _norm_cn(title):
-                score += 5
-            elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
-                score += 2
-            if score > best_score:
-                best_score, best_data = score, r
-        return best_score, best_data
+    def _score_candidate(r, artist, title, *, collaboration_aware=False, bonus_fields=False):
+        """Score a single metadata result against the parsed artist/title.
 
-    def _score_ne(results, artist, title):
-        best_score, best_data = -1, None
-        for r in results:
-            r_artist_raw = r.get("artist", "")
+        - collaboration_aware: for NetEase, which returns comma-joined multi-artist
+          strings — reduces the exact-artist score and uses the raw (uncleaned)
+          artist for the contains check.
+        - bonus_fields: for iTunes, adds small bonuses for having cover art and
+          an album name.
+        """
+        r_artist_raw = r.get("artist", "")
+        if collaboration_aware:
             r_artist = _clean_artist(r_artist_raw)
-            r_title = r.get("title", "").strip()
-            is_collaboration = "," in r_artist_raw or "，" in r_artist_raw
-            score = 0
-            if _norm_cn(r_artist) == _norm_cn(artist) and not is_collaboration:
-                score += 20
-            elif _norm_cn(r_artist) == _norm_cn(artist) and is_collaboration:
-                score += 5
-            elif _norm_cn(artist) in _norm_cn(r_artist_raw):
-                score += 3
-            if _norm_cn(r_title) == _norm_cn(title):
-                score += 5
-            elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
-                score += 2
-            if score > best_score:
-                best_score, best_data = score, r
-        return best_score, best_data
+        else:
+            r_artist = r_artist_raw.strip()
+        r_title = r.get("title", "").strip()
+        is_collab = collaboration_aware and ("," in r_artist_raw or "，" in r_artist_raw)
 
-    def _score_it(results, artist, title):
-        best_score, best_data = -1, None
-        for r in results:
-            r_artist = r.get("artist", "").strip()
-            r_title = r.get("title", "").strip()
-            score = 0
-            if _norm_cn(r_artist) == _norm_cn(artist):
-                score += 20
-            elif _norm_cn(artist) in _norm_cn(r_artist):
-                score += 8
-            if _norm_cn(r_title) == _norm_cn(title):
-                score += 5
-            elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
-                score += 2
-            if r.get("cover"):
+        score = 0
+        if _norm_cn(r_artist) == _norm_cn(artist):
+            score += 5 if is_collab else 20
+        elif collaboration_aware and _norm_cn(artist) in _norm_cn(r_artist_raw):
+            score += 3
+        elif _norm_cn(artist) in _norm_cn(r_artist):
+            score += 8
+
+        if _norm_cn(r_title) == _norm_cn(title):
+            score += 5
+        elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
+            score += 2
+
+        if bonus_fields:
+            cover = r.get("cover") or r.get("pic_url")
+            if cover:
                 score += 3  # has cover art
             if r.get("album"):
                 score += 2  # has album name
+        return score
+
+    def _best(results, **kwargs):
+        """Return (best_score, best_data) across a list of results."""
+        best_score, best_data = -1, None
+        for r in results:
+            score = _score_candidate(r, artist, title, **kwargs)
             if score > best_score:
                 best_score, best_data = score, r
         return best_score, best_data
@@ -1038,9 +1035,9 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
             it_results = []
 
     # Score each source's results (pure CPU, microseconds — no need to parallelize).
-    best_mb_score, mb_data = _score_mb(mb_results, artist, title)
-    best_ne_score, ne_data = _score_ne(ne_results, artist, title)
-    best_it_score, it_data = _score_it(it_results, artist, title)
+    best_mb_score, mb_data = _best(mb_results)
+    best_ne_score, ne_data = _best(ne_results, collaboration_aware=True)
+    best_it_score, it_data = _best(it_results, bonus_fields=True)
 
     if mb_data:
         print(f"    Best: {mb_data['artist']} - {mb_data['title']} [MusicBrainz (score={best_mb_score})]")
@@ -1096,10 +1093,12 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
 
     # ── Download album cover ──
     cover_path = None
-    if pic_url:
+    if embed_thumbnail and pic_url:
         cover_path = download_cover(pic_url, python)
         if cover_path:
             print(f"  Downloaded album cover")
+    elif not embed_thumbnail:
+        print(f"  Cover: skipped (--no-thumbnail)")
 
     # ── Set ID3 tags with ffmpeg ──
     ok = set_metadata(filepath, title=title, artist=artist, album=album, cover_path=cover_path)
@@ -1149,6 +1148,52 @@ def _ytdlp_download(
     env["PYTHONIOENCODING"] = "utf-8"
 
     return run_streaming(cmd, env=env) == 0
+
+
+# ─── Shared ffmpeg conversion ────────────────────────────────────────────
+
+# ffmpeg codec mapping shared by all direct-download converters.
+_FMT_CODEC = {
+    "mp3": "libmp3lame",
+    "flac": "flac",
+    "opus": "libopus",
+    "vorbis": "libvorbis",
+    "wav": "pcm_s16le",
+    "m4a": "aac",
+}
+
+
+def _ffmpeg_convert(ffmpeg_exe, raw_path, final_path, fmt, bitrate=None):
+    """Convert a raw audio file to the target format via ffmpeg.
+
+    Shared by the Bilibili API direct and NetEase direct download paths.
+    Removes ``raw_path`` on success or failure. Returns True on success.
+    For lossy formats (mp3/opus/vorbis) ``bitrate`` is applied when given;
+    mp3 without a bitrate uses VBR quality 2.
+    """
+    convert_cmd = [ffmpeg_exe, "-y", "-i", raw_path, "-codec:a", _FMT_CODEC.get(fmt, "libmp3lame")]
+    if fmt == "mp3":
+        convert_cmd.extend(["-b:a", str(bitrate)] if bitrate else ["-qscale:a", "2"])
+    elif bitrate:
+        convert_cmd.extend(["-b:a", str(bitrate)])
+    convert_cmd.append(final_path)
+    try:
+        result = subprocess.run(
+            convert_cmd, capture_output=True, text=True, timeout=180,
+            encoding="utf-8", errors="replace",
+        )
+        if result.returncode != 0:
+            print(f"    [!] FFmpeg failed: {result.stderr[:200]}")
+            return False
+    except Exception as e:
+        print(f"    [!] FFmpeg error: {e}")
+        return False
+    finally:
+        if os.path.isfile(raw_path):
+            os.remove(raw_path)
+
+    print(f"    Converted: {os.path.getsize(final_path) / (1024 * 1024):.1f} MB ({fmt.upper()})")
+    return True
 
 
 # ─── Bilibili API Direct Download (Tier 2: bypasses yt-dlp 412) ──────────
@@ -1232,34 +1277,7 @@ def _bili_api_download(bvid, output, fmt="flac", bitrate=None, python=None):
 
     print(f"    Converting to {fmt}...")
     final_path = os.path.join(output, f"bilibili_audio_{aid}.{fmt}")
-    convert_cmd = [ffmpeg_exe, "-y", "-i", raw_path]
-    if fmt == "mp3":
-        convert_cmd.extend(["-codec:a", "libmp3lame"])
-        convert_cmd.extend(["-qscale:a", "2"] if not bitrate else ["-b:a", str(bitrate)])
-    elif fmt == "flac":
-        convert_cmd.extend(["-codec:a", "flac"])
-    elif fmt == "opus":
-        convert_cmd.extend(["-codec:a", "libopus"])
-    elif fmt == "vorbis":
-        convert_cmd.extend(["-codec:a", "libvorbis"])
-    elif fmt == "wav":
-        convert_cmd.extend(["-codec:a", "pcm_s16le"])
-    else:
-        convert_cmd.extend(["-codec:a", "libmp3lame", "-qscale:a", "2"])
-    convert_cmd.append(final_path)
-    try:
-        result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=180, encoding="utf-8", errors="replace")
-        if result.returncode != 0:
-            print(f"    [!] FFmpeg failed: {result.stderr[:200]}")
-            return False
-    except Exception as e:
-        print(f"    [!] FFmpeg error: {e}")
-        return False
-    finally:
-        if os.path.isfile(raw_path): os.remove(raw_path)
-
-    print(f"    Converted: {os.path.getsize(final_path) / (1024 * 1024):.1f} MB ({fmt.upper()})")
-    return True
+    return _ffmpeg_convert(ffmpeg_exe, raw_path, final_path, fmt, bitrate)
 
 
 # ─── Commands ────────────────────────────────────────────────────────────
@@ -1572,7 +1590,7 @@ def cmd_download(
             ok = _netease_direct_download(song_id, resolved, output, fmt, bitrate, py)
             if ok:
                 if not no_metadata:
-                    enhance_metadata(py, resolved, "", output)
+                    enhance_metadata(py, resolved, "", output, embed_thumbnail=embed_thumbnail)
                 print(f"\n[OK] Download complete (via NetEase direct)!")
                 print(f"     Files saved to: {output}")
                 return {
@@ -1636,7 +1654,7 @@ def cmd_download(
         )
         if ok:
             if not no_metadata:
-                enhance_metadata(py, query, item["title"], output)
+                enhance_metadata(py, query, item["title"], output, embed_thumbnail=embed_thumbnail)
             print(f"\n[OK] Download complete!")
             print(f"     Files saved to: {output}")
             return {
@@ -1661,7 +1679,7 @@ def cmd_download(
         )
         if ok_api:
             if not no_metadata:
-                enhance_metadata(py, query, item["title"], output)
+                enhance_metadata(py, query, item["title"], output, embed_thumbnail=embed_thumbnail)
             print(f"\n[OK] Download complete (via Bilibili API direct)!")
             print(f"     Files saved to: {output}")
             return {
@@ -1714,7 +1732,7 @@ def _do_youtube_download(
     )
     if ok:
         if not no_metadata:
-            enhance_metadata(py, query, "", output)
+            enhance_metadata(py, query, "", output, embed_thumbnail=embed_thumbnail)
         print(f"\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
@@ -1787,7 +1805,7 @@ def _download_direct(
     )
     if ok:
         if not no_metadata:
-            enhance_metadata(py, url, "", output)
+            enhance_metadata(py, url, "", output, embed_thumbnail=embed_thumbnail)
         print(f"\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
@@ -1885,37 +1903,7 @@ def _netease_direct_download(song_id, song_name, output, fmt, bitrate, python):
 
     print(f"    Converting to {fmt}...")
     final_path = os.path.join(output, f"{sanitize_filename(song_name)}.{fmt}")
-    convert_cmd = [ffmpeg_exe, "-y", "-i", raw_path, "-codec:a"]
-    if fmt == "flac":
-        convert_cmd.append("flac")
-    elif fmt == "opus":
-        convert_cmd.append("libopus")
-    elif fmt == "vorbis":
-        convert_cmd.append("libvorbis")
-    elif fmt == "wav":
-        convert_cmd.append("pcm_s16le")
-    elif fmt == "m4a":
-        convert_cmd.append("aac")
-    else:
-        convert_cmd.append("libmp3lame")
-    if bitrate and fmt == "mp3":
-        convert_cmd.extend(["-b:a", str(bitrate)])
-    convert_cmd.append(final_path)
-    try:
-        result = subprocess.run(convert_cmd, capture_output=True, text=True, timeout=180,
-                                encoding="utf-8", errors="replace")
-        if result.returncode != 0:
-            print(f"    [!] FFmpeg failed: {result.stderr[:200]}")
-            return False
-    except Exception as e:
-        print(f"    [!] FFmpeg error: {e}")
-        return False
-    finally:
-        if os.path.isfile(raw_path):
-            os.remove(raw_path)
-
-    print(f"    Converted: {os.path.getsize(final_path) / (1024 * 1024):.1f} MB ({fmt})")
-    return True
+    return _ffmpeg_convert(ffmpeg_exe, raw_path, final_path, fmt, bitrate)
 
 
 def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):

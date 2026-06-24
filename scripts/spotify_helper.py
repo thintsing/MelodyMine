@@ -36,6 +36,7 @@ import sys
 from melodymine_common import (
     DEFAULT_OUTPUT,
     build_spotdl_proxy_args,
+    check_module,
     detect_python_with,
     find_ffmpeg,
     find_python,
@@ -282,7 +283,6 @@ def check_install():
             info["spotdl_version"] = spotdl_ver
 
         # Check PySocks
-        from melodymine_common import check_module
         if check_module(python_exe, "socks"):
             info["pysocks"] = True
 

@@ -45,12 +45,30 @@ class TestParseSearchQuery(unittest.TestCase):
         self.assertEqual(parse_search_query("周杰伦 稻香"), ("周杰伦", "稻香"))
 
     def test_english_multi_token(self):
-        # parse_search_query uses "first token = artist" heuristic,
-        # so "The Weeknd" is NOT grouped — "The" becomes artist.
-        # This documents the current (imperfect) behavior.
+        # Leading article "The" is grouped with the next token as the artist.
         self.assertEqual(
             parse_search_query("The Weeknd Blinding Lights"),
-            ("The", "Weeknd Blinding Lights"),
+            ("The Weeknd", "Blinding Lights"),
+        )
+
+    def test_english_article_a(self):
+        # "A" + next token becomes the artist.
+        self.assertEqual(
+            parse_search_query("A Test Song"),
+            ("A Test", "Song"),
+        )
+
+    def test_english_article_an(self):
+        self.assertEqual(
+            parse_search_query("An End Song"),
+            ("An End", "Song"),
+        )
+
+    def test_english_no_article_first_token(self):
+        # No article: first token stays the artist.
+        self.assertEqual(
+            parse_search_query("Adele Hello"),
+            ("Adele", "Hello"),
         )
 
     def test_single_token_returns_none_artist(self):
