@@ -734,6 +734,42 @@ def set_metadata(filepath, title=None, artist=None, album=None, cover_path=None)
         return False
 
 
+def itunes_search(query, limit=5):
+    """
+    Search iTunes Search API (free, no auth).
+    Returns list of dicts with keys: artist, title, album, cover, date, genre
+    or empty list on failure.
+    """
+    try:
+        import urllib.request, urllib.parse, json
+        url = "https://itunes.apple.com/search?" + urllib.parse.urlencode({
+            "term": query, "media": "music", "limit": str(limit)
+        })
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "Mozilla/5.0")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return []
+
+    results = []
+    for r in data.get("results", []):
+        artwork = r.get("artworkUrl100", "")
+        # Upgrade cover resolution: 100x100 -> 600x600
+        if artwork:
+            artwork = artwork.replace("100x100bb", "600x600bb")
+        results.append({
+            "artist": r.get("artistName", "").strip(),
+            "title": r.get("trackName", "").strip(),
+            "album": r.get("collectionName", "").strip(),
+            "cover": artwork,
+            "date": r.get("releaseDate", "")[:10],
+            "genre": r.get("primaryGenreName", ""),
+            "duration_ms": r.get("trackTimeMillis", 0),
+        })
+    return results
+
+
 def enhance_metadata(python, search_query, bili_title, output_dir):
     """
     Post-download metadata enhancement (multi-source strategy).
@@ -824,27 +860,67 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
     else:
         print(f"    No results from NetEase")
 
+    # ── Layer 2c: iTunes Search API ──
+    best_it_score = -1
+    it_data = None
+    print(f"  Looking up album info on iTunes: {search_query}")
+    it_results = itunes_search(search_query, limit=10)
+    if it_results:
+        for r in it_results:
+            r_artist = r.get("artist", "").strip()
+            r_title = r.get("title", "").strip()
+            score = 0
+            if _norm_cn(r_artist) == _norm_cn(artist):
+                score += 20
+            elif _norm_cn(artist) in _norm_cn(r_artist):
+                score += 8
+            if _norm_cn(r_title) == _norm_cn(title):
+                score += 5
+            elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
+                score += 2
+            if r.get("cover"):
+                score += 3  # has cover art
+            if r.get("album"):
+                score += 2  # has album name
+            if score > best_it_score:
+                best_it_score = score
+                it_data = r
+        if it_data:
+            print(f"    Best: {it_data['artist']} - {it_data['title']} [iTunes (score={best_it_score})]")
+    else:
+        print(f"    No results from iTunes")
+
     # Pick the winner
-    album = ""
-    pic_url = ""
-    source = "parsed query"
-    if mb_data and ne_data:
-        if best_mb_score >= best_ne_score:
-            pic_url = mb_data.get("pic_url", "")
-            album = mb_data.get("album", "").strip()
-            source = "MusicBrainz"
-        else:
-            pic_url = ne_data.get("pic_url", "")
-            album = ne_data.get("album", "").strip()
-            source = "NetEase"
-    elif mb_data:
-        pic_url = mb_data.get("pic_url", "")
-        album = mb_data.get("album", "").strip()
-        source = "MusicBrainz"
-    elif ne_data:
-        pic_url = ne_data.get("pic_url", "")
-        album = ne_data.get("album", "").strip()
-        source = "NetEase"
+    # Collect all candidates with (source_key, score, data)
+    candidates = []
+    if mb_data:
+        candidates.append(("MusicBrainz", best_mb_score, mb_data))
+    if ne_data:
+        candidates.append(("NetEase", best_ne_score, ne_data))
+    if it_data:
+        candidates.append(("iTunes", best_it_score, it_data))
+
+    if not candidates:
+        album, pic_url, source = "", "", "parsed query"
+    else:
+        # Sort by score descending, then by cover availability descending
+        def sort_key(item):
+            src, score, data = item
+            has_cover = 1 if (src == "iTunes" and data.get("cover")) or data.get("pic_url") else 0
+            return (score, has_cover)
+
+        candidates.sort(key=sort_key, reverse=True)
+        source, best_score, best_data = candidates[0]
+
+        if source == "MusicBrainz":
+            pic_url = best_data.get("pic_url", "")
+            album = best_data.get("album", "").strip()
+        elif source == "NetEase":
+            pic_url = best_data.get("pic_url", "")
+            album = best_data.get("album", "").strip()
+        else:  # iTunes
+            pic_url = best_data.get("cover", "")
+            album = best_data.get("album", "").strip()
 
     if album:
         print(f"  Album: {album} (from {source})")
@@ -971,10 +1047,11 @@ def _bili_api_download(bvid, output, fmt="flac", bitrate=None, search_query="", 
         print(f"    [!] Failed to get playurl: {e}")
         return False
     audio_streams = data.get("data", {}).get("dash", {}).get("audio", [])
+    audio_streams.sort(key=lambda s: s.get("bandwidth", 0), reverse=True)
     if not audio_streams:
         print("    [!] No audio streams")
         return False
-    audio_url = audio_streams[0].get("baseUrl", "")
+    audio_url = audio_streams[0]["baseUrl"]
     if not audio_url:
         print("    [!] No baseUrl")
         return False
