@@ -988,8 +988,11 @@ def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbna
         score = 0
         if _norm_cn(r_artist) == _norm_cn(artist):
             score += 5 if is_collab else 20
-        elif collaboration_aware and _norm_cn(artist) in _norm_cn(r_artist_raw):
-            score += 3
+        elif collaboration_aware:
+            # NetEase path: match against the raw (comma-joined) artist string,
+            # exactly as the original _score_ne did — never the +8 branch.
+            if _norm_cn(artist) in _norm_cn(r_artist_raw):
+                score += 3
         elif _norm_cn(artist) in _norm_cn(r_artist):
             score += 8
 
