@@ -171,6 +171,8 @@ MelodyMine/
 │   ├── music_helper.py       # Main setup/search/download helper
 │   ├── spotify_helper.py     # Advanced spotDL operations
 │   └── requirements.txt
+├── tests/
+│   └── test_helpers.py       # Unit tests for pure functions (stdlib unittest)
 └── references/
     ├── usage.md              # spotDL CLI reference
     └── config.md             # spotDL config reference

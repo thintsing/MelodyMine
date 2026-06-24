@@ -48,7 +48,7 @@ Read `references/usage.md` only when the user needs advanced spotDL options. Rea
 ## Download Workflow
 
 1. Extract the song, artist, album, playlist, URL, requested format, output path, proxy, and search-result index from the user request.
-2. Run setup first if this is the first MelodyMine use on the machine.
+2. If this is the first MelodyMine use on the machine, run `setup` first. Otherwise `download` and `check` auto-ensure dependencies — no explicit `setup` needed.
 3. Select platform:
    - Spotify URL: pass the URL to `music_helper.py download`.
    - Query containing Chinese characters: use auto mode, which prefers Bilibili.
