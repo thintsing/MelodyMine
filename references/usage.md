@@ -1,6 +1,6 @@
-# spotDL Usage Reference
+# MelodyMine — spotDL Usage Reference
 
-Complete command reference for spotDL v4.
+Complete command reference for spotDL v4, the engine MelodyMine uses for Spotify URL downloads. MelodyMine's `spotify_helper.py` wraps these operations.
 
 ## Operations
 

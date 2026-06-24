@@ -1,4 +1,6 @@
-# spotDL Configuration Reference
+# MelodyMine — spotDL Configuration Reference
+
+spotDL is the engine MelodyMine uses for Spotify URL downloads. This reference documents spotDL's own configuration, which MelodyMine invokes under the hood.
 
 ## Config File Location
 
@@ -114,6 +116,7 @@ To disable auto-loading:
 ## Spotify API Credentials
 
 spotDL ships with public credentials that work for most users. For heavy usage or private
+playlists, create your own at https://developer.spotify.com/dashboard:
 playlists, create your own at https://developer.spotify.com/dashboard:
 
 1. Create app → set redirect URI to `http://localhost:8080`
