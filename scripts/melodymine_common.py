@@ -47,6 +47,67 @@ SPOTIFY_RE = re.compile(
 # Unified venv path shared by both helpers so dependencies are installed once.
 VENV_DIR = os.path.join(HOME, ".cache", "melodymine-venv")
 
+# Dependency version compatibility matrix.
+# Format: module_name -> (min_version, max_major, tested_version, severity)
+#   min_version: lowest version that works (inclusive)
+#   max_major:   highest major version allowed (exclusive upper bound)
+#   tested_version: a version explicitly verified to work
+#   severity: "error" = likely broken, "warn" = untested but probably OK
+#
+# Rationale:
+#   yt-dlp: only set a floor (platform-compat fixes ship constantly); no upper
+#           bound because new versions almost always improve extraction.
+#   spotdl: hard-cap major version — MelodyMine imports spotdl's internal
+#           SpotifyClient API (spotify_helper.py), which breaks across majors.
+DEP_COMPAT = {
+    "yt_dlp": {"min": "2024.0.0", "max_major": None, "tested": "2026.06.09", "severity": "warn"},
+    "spotdl": {"min": "4.2.0", "max_major": 5, "tested": "4.5.0", "severity": "error"},
+}
+
+
+def check_version_compat(module_name, installed_version):
+    """Check an installed version against the compatibility matrix.
+
+    Returns (status, message):
+      status: "ok" | "warn" | "error"
+      message: human-readable explanation, or "" if ok
+    """
+    spec = DEP_COMPAT.get(module_name)
+    if not spec or not installed_version:
+        return "ok", ""
+
+    def _parse(v):
+        """Parse a version string into a tuple of ints for comparison."""
+        parts = re.split(r"[.\-]", v)
+        nums = []
+        for p in parts:
+            try:
+                nums.append(int(p))
+            except ValueError:
+                break
+        return tuple(nums) or (0,)
+
+    inst = _parse(installed_version)
+
+    # Floor check
+    if spec["min"] and inst < _parse(spec["min"]):
+        return spec["severity"], f"v{installed_version} is below minimum v{spec['min']} — upgrade required"
+
+    # Major cap check
+    if spec["max_major"] is not None:
+        if inst and inst[0] >= spec["max_major"]:
+            return spec["severity"], (
+                f"v{installed_version} is at or above major v{spec['max_major']} "
+                f"— MelodyMine was tested up to v{spec['tested']}, "
+                f"downgrade with: pip install {module_name.replace('_', '-')}<\"{spec['max_major']}.0.0\""
+            )
+
+    # Untested-but-ok
+    if spec["tested"] and inst != _parse(spec["tested"]):
+        return "warn", f"v{installed_version} (tested on v{spec['tested']}, should work but unverified)"
+
+    return "ok", ""
+
 
 def _get_default_output():
     """Pick a sensible default output directory that exists on this platform."""

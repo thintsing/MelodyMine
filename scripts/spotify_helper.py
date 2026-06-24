@@ -50,7 +50,10 @@ from melodymine_common import (
 DEFAULT_PROXY = None
 
 # Packages installed when bootstrapping spotDL.
-SPOTDL_PACKAGES = ["spotdl", "PySocks"]
+# spotdl is hard-capped to major 4 — MelodyMine imports spotdl's internal
+# SpotifyClient API (see spotify_search), which breaks across major versions.
+# Keep this in sync with requirements.txt and DEP_COMPAT in melodymine_common.py.
+SPOTDL_PACKAGES = ["spotdl>=4.2.0,<5.0.0", "PySocks"]
 
 
 def _get_python():

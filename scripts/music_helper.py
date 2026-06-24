@@ -28,10 +28,12 @@ from pathlib import Path
 from melodymine_common import (
     BILI_UA,
     DEFAULT_OUTPUT,
+    DEP_COMPAT,
     PROXY_PLATFORMS,
     SPOTIFY_RE,
     auto_select_platform,
     check_module,
+    check_version_compat,
     debug_log,
     find_ffmpeg,
     find_python,
@@ -1262,6 +1264,22 @@ def cmd_check():
     else:
         print("  [--]   spotDL:        not installed (optional)")
 
+    # ── Version compatibility checks ──
+    print("\n  Version compatibility:")
+    checks = []
+    if ytdlp_ver:
+        checks.append(("yt_dlp", "yt-dlp", ytdlp_ver))
+    if sp_ver:
+        checks.append(("spotdl", "spotdl", sp_ver))
+    for mod, display, ver in checks:
+        status, msg = check_version_compat(mod, ver)
+        if status == "ok":
+            print(f"  [OK]   {display:13s} v{ver}")
+        elif status == "warn":
+            print(f"  [WARN] {display:13s} {msg}")
+        else:
+            print(f"  [FAIL] {display:13s} {msg}")
+
     print("\n  Platforms:")
     print("    - Bilibili  (Chinese songs, no proxy needed)")
     print("    - YouTube   (English songs, proxy optional — needed in China)")
@@ -1583,7 +1601,7 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
     sp_ver = has_spotdl(python)
     if not sp_ver:
         print("  spotDL not installed, auto-installing...")
-        pip_install(python, ["spotdl"])
+        pip_install(python, ["spotdl>=4.2.0,<5.0.0"])
         sp_ver = has_spotdl(python)
     if not sp_ver:
         print("ERROR: spotDL installation failed.")

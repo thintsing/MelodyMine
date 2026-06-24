@@ -7,5 +7,8 @@ pysocks>=1.7.1
 # FFmpeg (no system install needed — this pip package bundles a static binary)
 imageio-ffmpeg>=0.4.9
 
-# Optional: Spotify URL support (has known bugs with SpotipyFree)
-# spotdl>=4.2.0
+# Spotify URL support (hard-capped to major 4 — MelodyMine imports spotdl's
+# internal SpotifyClient API, which breaks across major versions).
+# To upgrade: test with the new version, then bump the upper bound here and
+# in scripts/spotify_helper.py (SPOTDL_PACKAGES) and DEP_COMPAT in melodymine_common.py.
+spotdl>=4.2.0,<5.0.0
