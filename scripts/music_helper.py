@@ -72,6 +72,69 @@ def has_spotdl(python):
     return check_module(python, "spotdl")
 
 
+# ─── Command builders (shared by dry-run and real execution) ─────────────
+
+def _build_ytdlp_cmd(
+    python, url_or_query, output, fmt, bitrate=None,
+    embed_thumbnail=True, proxy=None, bili_ua=False, index=1,
+    cookies=None, ffmpeg_location=None,
+):
+    """Build the yt-dlp command list.
+
+    Single source of truth for both dry-run preview and real execution.
+    ``python`` is the interpreter path (or literal "python" for dry-run).
+    ``ffmpeg_location`` is only added when ffmpeg isn't on the system PATH.
+    """
+    cmd = [
+        python, "-m", "yt_dlp",
+        url_or_query,
+        "--playlist-items", str(index),
+        "-f", "bestaudio/best",
+        "-x",
+        "--audio-format", fmt,
+        "--embed-metadata",
+        "-o", os.path.join(output, "%(title)s.%(ext)s"),
+        "--no-warnings",
+        "--newline",
+    ]
+    if ffmpeg_location and ffmpeg_location not in ("ffmpeg", "ffmpeg.exe"):
+        cmd.extend(["--ffmpeg-location", ffmpeg_location])
+    if bitrate:
+        cmd.extend(["--audio-quality", str(bitrate)])
+    else:
+        cmd.extend(["--audio-quality", "0"])
+    if embed_thumbnail:
+        cmd.append("--embed-thumbnail")
+    if bili_ua:
+        cmd.extend(["--user-agent", BILI_UA])
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+    if cookies:
+        cmd.extend(["--cookies", cookies])
+    return cmd
+
+
+def _build_spotdl_cmd(python, url, output, fmt, bitrate=None, proxy=None):
+    """Build the spotdl download command list.
+
+    Single source of truth for both dry-run preview and real execution.
+    """
+    cmd = [
+        python, "-m", "spotdl", "download", url,
+        "--output", output,
+        "--format", fmt,
+        "--print-errors",
+    ]
+    if bitrate:
+        cmd.extend(["--bitrate", str(bitrate)])
+    if proxy:
+        if proxy.startswith("socks5"):
+            cmd.extend(["--yt-dlp-args", f"--proxy {proxy}"])
+        else:
+            cmd.extend(["--proxy", proxy])
+    return cmd
+
+
 # ─── JSON / Plan helpers ─────────────────────────────────────────────────
 
 
@@ -89,19 +152,7 @@ def _download_plan(
         output = DEFAULT_OUTPUT
 
     if is_spotify_url(query):
-        command = [
-            "python", "-m", "spotdl", "download", query,
-            "--output", output,
-            "--format", fmt,
-            "--print-errors",
-        ]
-        if bitrate:
-            command.extend(["--bitrate", str(bitrate)])
-        if proxy:
-            if proxy.startswith("socks5"):
-                command.extend(["--yt-dlp-args", f"--proxy {proxy}"])
-            else:
-                command.extend(["--proxy", proxy])
+        command = _build_spotdl_cmd("python", query, output, fmt, bitrate, proxy)
         return {
             "ok": True,
             "dry_run": True,
@@ -119,40 +170,21 @@ def _download_plan(
     selected = auto_select_platform(query) if platform == "auto" else platform
     notes = []
 
-    # Common yt-dlp args (mirrors _ytdlp_download); URL slot (index 3) filled per-platform.
-    command = [
-        "python", "-m", "yt_dlp",
-        "<URL-or-ytsearch>",  # index 3 — filled below
-        "--playlist-items", str(index),
-        "-f", "bestaudio/best",
-        "-x",
-        "--audio-format", fmt,
-        "--embed-metadata",
-        "-o", os.path.join(output, "%(title)s.%(ext)s"),
-        "--no-warnings",
-        "--newline",
-    ]
-    if bitrate:
-        command.extend(["--audio-quality", str(bitrate)])
-    else:
-        command.extend(["--audio-quality", "0"])
-    if embed_thumbnail:
-        command.append("--embed-thumbnail")
-
     if selected == "bilibili":
-        # Bilibili: wbi search resolves the BV URL, then yt-dlp downloads it.
-        command[3] = "https://www.bilibili.com/video/<bvid>"
-        command.extend(["--user-agent", BILI_UA])
+        url_slot = "https://www.bilibili.com/video/<bvid>"
         notes.append("Bilibili dry-run: bvid is resolved at runtime via wbi search.")
         notes.append("If Bilibili search/download fails, MelodyMine falls back to YouTube.")
     else:
-        command[3] = f"ytsearch:{query}"
+        url_slot = f"ytsearch:{query}"
         notes.append("YouTube: yt-dlp search + download in one step.")
 
-    if proxy:
-        command.extend(["--proxy", proxy])
-    if cookies:
-        command.extend(["--cookies", cookies])
+    command = _build_ytdlp_cmd(
+        "python", url_slot, output, fmt, bitrate,
+        embed_thumbnail=embed_thumbnail,
+        bili_ua=(selected == "bilibili"),
+        index=index, proxy=proxy, cookies=cookies,
+        # ffmpeg_location omitted on dry-run — it's a runtime-resolved path
+    )
 
     return {
         "ok": True,
@@ -984,40 +1016,15 @@ def _ytdlp_download(
     cookies=None,
 ):
     """Run yt-dlp to download and convert audio. Returns True on success."""
-    cmd = [
-        python, "-m", "yt_dlp",
-        url_or_query,
-        "--playlist-items", str(index),
-        "-f", "bestaudio/best",
-        "-x",
-        "--audio-format", fmt,
-        "--embed-metadata",
-        "-o", os.path.join(output, "%(title)s.%(ext)s"),
-        "--no-warnings",
-        "--newline",
-    ]
-
-    # Tell yt-dlp where ffmpeg is (critical when using imageio-ffmpeg)
+    # Tell yt-dlp where ffmpeg is (critical when using imageio-ffmpeg).
+    # This is the one arg that differs between dry-run (omitted) and real run.
     ffmpeg_exe = find_ffmpeg(python)
-    if ffmpeg_exe and ffmpeg_exe not in ("ffmpeg", "ffmpeg.exe"):
-        cmd.extend(["--ffmpeg-location", ffmpeg_exe])
 
-    if bitrate:
-        cmd.extend(["--audio-quality", str(bitrate)])
-    else:
-        cmd.extend(["--audio-quality", "0"])
-
-    if embed_thumbnail:
-        cmd.append("--embed-thumbnail")
-
-    if bili_ua:
-        cmd.extend(["--user-agent", BILI_UA])
-
-    if proxy:
-        cmd.extend(["--proxy", proxy])
-
-    if cookies:
-        cmd.extend(["--cookies", cookies])
+    cmd = _build_ytdlp_cmd(
+        python, url_or_query, output, fmt, bitrate,
+        embed_thumbnail=embed_thumbnail, proxy=proxy, bili_ua=bili_ua,
+        index=index, cookies=cookies, ffmpeg_location=ffmpeg_exe,
+    )
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
@@ -1524,24 +1531,12 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
         output = DEFAULT_OUTPUT
     os.makedirs(output, exist_ok=True)
 
-    cmd = [
-        python, "-m", "spotdl", "download", url,
-        "--output", output,
-        "--format", fmt,
-        "--print-errors",
-    ]
-    if bitrate:
-        cmd.extend(["--bitrate", str(bitrate)])
+    cmd = _build_spotdl_cmd(python, url, output, fmt, bitrate, proxy)
 
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
-
-    if proxy:
-        if proxy.startswith("socks5"):
-            cmd.extend(["--yt-dlp-args", f"--proxy {proxy}"])
-            env["ALL_PROXY"] = proxy
-        else:
-            cmd.extend(["--proxy", proxy])
+    if proxy and proxy.startswith("socks5"):
+        env["ALL_PROXY"] = proxy
 
     print("=" * 60)
     print("  Engine   : spotDL (Spotify URL)")
