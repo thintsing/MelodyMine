@@ -1038,7 +1038,7 @@ def _ytdlp_download(
 
 # ─── Bilibili API Direct Download (Tier 2: bypasses yt-dlp 412) ──────────
 
-def _bili_api_download(bvid, output, fmt="mp3", bitrate=None, search_query="", python=None):
+def _bili_api_download(bvid, output, fmt="mp3", bitrate=None, python=None):
     """Download audio directly from Bilibili's playurl API, bypassing yt-dlp entirely."""
     if python is None:
         python, _ = _find_music_python()
@@ -1219,7 +1219,7 @@ def cmd_setup():
     if sp:
         print(f"    [OK] Spotify   (via spotDL v{sp})")
     else:
-        print("    [--] Spotify   (optional: pip install spotdl)")
+        print("    [--] Spotify   (optional: pip install 'spotdl>=4.2.0,<5.0.0')")
     print()
     return True
 
@@ -1442,7 +1442,6 @@ def cmd_download(
     if platform == "auto":
         platform = auto_select_platform(query)
         debug_log(f"auto-selected platform: {platform}")
-        platform = auto_select_platform(query)
 
     if not output:
         output = DEFAULT_OUTPUT
@@ -1505,7 +1504,7 @@ def cmd_download(
         print(f"\n  yt-dlp download failed (likely 412 Precondition Failed).")
         ok_api = _bili_api_download(
             item["bvid"], output, fmt, bitrate,
-            search_query=query, python=py,
+            python=py,
         )
         if ok_api:
             if not no_metadata:

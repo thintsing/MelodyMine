@@ -119,12 +119,13 @@ python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookie
 - `--no-metadata`: skip multi-source metadata lookup, ID3 cleanup, and file rename.
 - `--dry-run`: print the command that would run without executing.
 - `--json`: output machine-readable JSON (use with `--dry-run` or after a successful download).
+- `--debug`: write a session log to `~/.melodymine/last_run.log` for troubleshooting.
 
 ## Platform Behavior
 
 | Input | Primary Path | Notes |
 | --- | --- | --- |
-| Chinese query | Bilibili | No proxy expected. Falls back to YouTube if Bilibili fails. |
+| Chinese query | Bilibili | No proxy expected. If yt-dlp hits 412, falls back to Bilibili API direct (Tier 2), then YouTube. |
 | English/non-Chinese query | YouTube | Try direct first. Add proxy only after network failure. |
 | Spotify URL | spotDL through `music_helper.py` | May need proxy in restricted regions. For playlist sync use `spotify_helper.py`. |
 
