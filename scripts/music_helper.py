@@ -1579,7 +1579,7 @@ def cmd_download(
                     "ok": True, "platform": "netease", "engine": "netease-outer-url",
                     "query": resolved, "source_url": query,
                     "format": fmt, "output": output,
-                    "metadata": not no_metadata, "fallback": "netease-direct",
+                    "metadata": not no_metadata, "fallback": False,
                 }
             print("    Falling back to Bilibili/YouTube search...")
 
