@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from melodymine_common import (
@@ -775,10 +776,9 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
     Post-download metadata enhancement (multi-source strategy).
 
     Layer 1: Parse user's search query
-    Layer 2a: MusicBrainz API (free, no auth)
-    Layer 2b: NetEase Music API (Chinese supplement)
-    Layer 3: Parse Bilibili video title (fallback)
-    Results from MusicBrainz and NetEase are scored; the best wins.
+    Layer 2: MusicBrainz + NetEase + iTunes queried concurrently, each scored
+    Layer 3: Parse Bilibili video title (fallback for artist/title only)
+    The highest-scoring source wins; ties broken by cover availability.
     Never raises — metadata enhancement is best-effort.
     """
     filepath = find_downloaded_file(output_dir)
@@ -801,16 +801,13 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
         print(f"  [!] Could not determine artist/title, keeping original tags")
         return
 
-    # ── Layer 2a: MusicBrainz ──
-    best_mb_score = -1
-    best_ne_score = -1
-    mb_data = None
-    ne_data = None
+    # ── Layer 2: Multi-source lookup (concurrent) ──
+    # MusicBrainz + NetEase + iTunes run in parallel to cut wait time.
+    print(f"  Looking up album info (MusicBrainz + NetEase + iTunes in parallel)...")
 
-    print(f"  Looking up album info on MusicBrainz: {search_query}")
-    mb_results = musicbrainz_lookup(search_query, python=python, limit=5)
-    if mb_results:
-        for r in mb_results:
+    def _score_mb(results, artist, title):
+        best_score, best_data = -1, None
+        for r in results:
             r_artist = r.get("artist", "").strip()
             r_title = r.get("title", "").strip()
             score = 0
@@ -822,20 +819,13 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
                 score += 5
             elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
                 score += 2
-            if score > best_mb_score:
-                best_mb_score = score
-                mb_data = r
-        if mb_data:
-            print(f"    Best: {mb_data['artist']} - {mb_data['title']} [MusicBrainz (score={best_mb_score})]")
-    else:
-        print(f"    No results from MusicBrainz")
+            if score > best_score:
+                best_score, best_data = score, r
+        return best_score, best_data
 
-    # ── Layer 2b: NetEase Music API ──
-    print(f"  Looking up album info on NetEase Music: {search_query}")
-    ne_results = metadata_lookup(search_query, python=python, limit=10)
-    if ne_results:
-        best = None
-        for r in ne_results:
+    def _score_ne(results, artist, title):
+        best_score, best_data = -1, None
+        for r in results:
             r_artist_raw = r.get("artist", "")
             r_artist = _clean_artist(r_artist_raw)
             r_title = r.get("title", "").strip()
@@ -851,22 +841,13 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
                 score += 5
             elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
                 score += 2
-            if score > best_ne_score:
-                best_ne_score = score
-                best = r
-        if best:
-            ne_data = best
-            print(f"    Best: {_clean_artist(best['artist'])} - {best['title']} [NetEase (score={best_ne_score})]")
-    else:
-        print(f"    No results from NetEase")
+            if score > best_score:
+                best_score, best_data = score, r
+        return best_score, best_data
 
-    # ── Layer 2c: iTunes Search API ──
-    best_it_score = -1
-    it_data = None
-    print(f"  Looking up album info on iTunes: {search_query}")
-    it_results = itunes_search(search_query, limit=10)
-    if it_results:
-        for r in it_results:
+    def _score_it(results, artist, title):
+        best_score, best_data = -1, None
+        for r in results:
             r_artist = r.get("artist", "").strip()
             r_title = r.get("title", "").strip()
             score = 0
@@ -882,11 +863,44 @@ def enhance_metadata(python, search_query, bili_title, output_dir):
                 score += 3  # has cover art
             if r.get("album"):
                 score += 2  # has album name
-            if score > best_it_score:
-                best_it_score = score
-                it_data = r
-        if it_data:
-            print(f"    Best: {it_data['artist']} - {it_data['title']} [iTunes (score={best_it_score})]")
+            if score > best_score:
+                best_score, best_data = score, r
+        return best_score, best_data
+
+    # Fire all three queries concurrently; each returns its raw results.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        fut_mb = pool.submit(musicbrainz_lookup, search_query, python=python, limit=5)
+        fut_ne = pool.submit(metadata_lookup, search_query, python=python, limit=10)
+        fut_it = pool.submit(itunes_search, search_query, limit=10)
+        # Wait for all; exceptions in a source just mean empty results for it.
+        try:
+            mb_results = fut_mb.result() or []
+        except Exception:
+            mb_results = []
+        try:
+            ne_results = fut_ne.result() or []
+        except Exception:
+            ne_results = []
+        try:
+            it_results = fut_it.result() or []
+        except Exception:
+            it_results = []
+
+    # Score each source's results (pure CPU, microseconds — no need to parallelize).
+    best_mb_score, mb_data = _score_mb(mb_results, artist, title)
+    best_ne_score, ne_data = _score_ne(ne_results, artist, title)
+    best_it_score, it_data = _score_it(it_results, artist, title)
+
+    if mb_data:
+        print(f"    Best: {mb_data['artist']} - {mb_data['title']} [MusicBrainz (score={best_mb_score})]")
+    else:
+        print(f"    No results from MusicBrainz")
+    if ne_data:
+        print(f"    Best: {_clean_artist(ne_data['artist'])} - {ne_data['title']} [NetEase (score={best_ne_score})]")
+    else:
+        print(f"    No results from NetEase")
+    if it_data:
+        print(f"    Best: {it_data['artist']} - {it_data['title']} [iTunes (score={best_it_score})]")
     else:
         print(f"    No results from iTunes")
 
