@@ -60,7 +60,7 @@ Read `references/usage.md` only when the user needs advanced spotDL options. Rea
 
 ## Core Examples
 
-Chinese song, default MP3:
+Chinese song, default FLAC:
 
 ```bash
 python scripts/music_helper.py download "周杰伦 稻香"
@@ -116,7 +116,7 @@ python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookie
 `music_helper.py download` supports:
 
 - `--platform {auto,bilibili,youtube}`: default `auto`.
-- `--format {mp3,flac,m4a,opus,wav,vorbis}`: default `mp3`.
+- `--format {mp3,flac,m4a,opus,wav,vorbis}`: default `flac`.
 - `--output PATH`: default platform music folder.
 - `--proxy URL`: for YouTube or Spotify download networking.
 - `--cookies PATH`: cookies.txt for YouTube bot/sign-in checks.

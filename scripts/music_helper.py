@@ -146,7 +146,7 @@ def _emit_json(payload):
 
 
 def _download_plan(
-    query, platform="auto", fmt="mp3", output=None, proxy=None, bitrate=None,
+    query, platform="auto", fmt="flac", output=None, proxy=None, bitrate=None,
     index=1, embed_thumbnail=True, no_metadata=False, cookies=None,
 ):
     """Build a side-effect-free execution plan for dry-run and JSON reporting."""
@@ -1119,7 +1119,7 @@ def _ytdlp_download(
 
 # ─── Bilibili API Direct Download (Tier 2: bypasses yt-dlp 412) ──────────
 
-def _bili_api_download(bvid, output, fmt="mp3", bitrate=None, python=None):
+def _bili_api_download(bvid, output, fmt="flac", bitrate=None, python=None):
     """Download audio directly from Bilibili's playurl API, bypassing yt-dlp entirely."""
     if python is None:
         python, _ = _find_music_python()
@@ -1487,7 +1487,7 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
 
 
 def cmd_download(
-    query, platform="auto", fmt="mp3", output=None,
+    query, platform="auto", fmt="flac", output=None,
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
     no_metadata=False, cookies=None, dry_run=False, json_output=False,
     debug=False,
