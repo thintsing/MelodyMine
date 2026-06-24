@@ -20,7 +20,9 @@ sys.path.insert(0, os.path.abspath(_SCRIPTS))
 
 from melodymine_common import (  # noqa: E402
     auto_select_platform,
+    extract_netease_song_id,
     is_chinese,
+    is_netease_url,
     is_spotify_url,
     sanitize_filename,
 )
@@ -172,6 +174,38 @@ class TestIsSpotifyUrl(unittest.TestCase):
 
     def test_plain_text(self):
         self.assertFalse(is_spotify_url("周杰伦 稻香"))
+
+
+class TestIsNeteaseUrl(unittest.TestCase):
+
+    def test_song_url(self):
+        self.assertTrue(is_netease_url("https://music.163.com/song?id=185809"))
+
+    def test_song_url_with_extra_params(self):
+        self.assertTrue(is_netease_url("https://music.163.com/song?id=185809&userid=123"))
+
+    def test_mobile_url(self):
+        self.assertTrue(is_netease_url("https://y.music.126.com/n/song?ids=12345"))
+
+    def test_non_netease_url(self):
+        self.assertFalse(is_netease_url("https://open.spotify.com/track/abc"))
+        self.assertFalse(is_netease_url("https://www.youtube.com/watch?v=abc"))
+
+    def test_plain_text(self):
+        self.assertFalse(is_netease_url("周杰伦 稻香"))
+
+
+class TestExtractNeteaseSongId(unittest.TestCase):
+
+    def test_extract_from_standard_url(self):
+        self.assertEqual(extract_netease_song_id("https://music.163.com/song?id=185809"), "185809")
+
+    def test_extract_with_extra_params(self):
+        self.assertEqual(extract_netease_song_id("https://music.163.com/song?id=123&userid=456"), "123")
+
+    def test_no_match(self):
+        self.assertIsNone(extract_netease_song_id("https://www.youtube.com/watch?v=abc"))
+        self.assertIsNone(extract_netease_song_id("not a url"))
 
 
 class TestSanitizeFilename(unittest.TestCase):

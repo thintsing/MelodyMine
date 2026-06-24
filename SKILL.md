@@ -1,6 +1,6 @@
 ---
 name: melodymine
-description: "Download music with MelodyMine from Bilibili, YouTube, and Spotify URLs. Use when the user asks to download/save songs, albums, playlists, music URLs, Chinese songs, English songs, Spotify tracks, Bilibili/YouTube audio, FLAC/MP3 music, or says phrases like 下载歌曲, 下载音乐, 下载这首歌, 下载歌单, 用 MelodyMine 下载, download music, download song, save this track, sync Spotify playlist."
+description: "Download music with MelodyMine from Bilibili, YouTube, Spotify URLs, and NetEase URLs. Use when the user asks to download/save songs, albums, playlists, music URLs, Chinese songs, English songs, Spotify tracks, NetEase/网易云 links, Bilibili/YouTube audio, FLAC/MP3 music, or says phrases like 下载歌曲, 下载音乐, 下载这首歌, 下载歌单, 下载这个链接, 用 MelodyMine 下载, download music, download song, save this track, sync Spotify playlist."
 ---
 
 # MelodyMine
@@ -51,6 +51,7 @@ Read `references/usage.md` only when the user needs advanced spotDL options. Rea
 2. If this is the first MelodyMine use on the machine, run `setup` first. Otherwise `download` and `check` auto-ensure dependencies — no explicit `setup` needed.
 3. Select platform:
    - Spotify URL: pass the URL to `music_helper.py download`.
+   - NetEase URL (`music.163.com/song?id=xxx`): pass the URL to `music_helper.py download` — it resolves the song name first, then downloads via Bilibili/YouTube.
    - Query containing Chinese characters: use auto mode, which prefers Bilibili.
    - English or non-Chinese query: use auto mode, which prefers YouTube.
 4. Add options requested by the user.
@@ -75,6 +76,12 @@ Spotify URL:
 
 ```bash
 python scripts/music_helper.py download "https://open.spotify.com/track/..."
+```
+
+NetEase URL (resolved to song name, then downloaded via Bilibili/YouTube):
+
+```bash
+python scripts/music_helper.py download "https://music.163.com/song?id=185809"
 ```
 
 Force platform:
@@ -128,6 +135,7 @@ python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookie
 | Chinese query | Bilibili | No proxy expected. If yt-dlp hits 412, falls back to Bilibili API direct (Tier 2), then YouTube. |
 | English/non-Chinese query | YouTube | Try direct first. Add proxy only after network failure. |
 | Spotify URL | spotDL through `music_helper.py` | May need proxy in restricted regions. For playlist sync use `spotify_helper.py`. |
+| NetEase URL (`music.163.com/song?id=xxx`) | Resolved to song name, then Bilibili/YouTube | The URL is translated to "Artist Title" via NetEase API, then downloaded via the normal pipeline. |
 
 ## Error Handling
 

@@ -35,9 +35,11 @@ from melodymine_common import (
     check_module,
     check_version_compat,
     debug_log,
+    extract_netease_song_id,
     find_ffmpeg,
     find_python,
     is_chinese,
+    is_netease_url,
     is_spotify_url,
     needs_proxy,
     pip_install,
@@ -167,6 +169,9 @@ def _download_plan(
             "notes": ["Spotify URLs are handled by spotDL."],
         }
 
+    # NetEase URLs are resolved at runtime (requires network), so dry-run just notes it.
+    netease_resolved = is_netease_url(query)
+
     selected = auto_select_platform(query) if platform == "auto" else platform
     notes = []
 
@@ -177,6 +182,9 @@ def _download_plan(
     else:
         url_slot = f"ytsearch:{query}"
         notes.append("YouTube: yt-dlp search + download in one step.")
+
+    if netease_resolved:
+        notes.append("NetEase URL: resolved to song name at runtime, then downloaded via Bilibili/YouTube.")
 
     command = _build_ytdlp_cmd(
         "python", url_slot, output, fmt, bitrate,
@@ -611,6 +619,83 @@ def metadata_lookup(query, python=None, limit=3):
         return []
 
     return data if isinstance(data, list) else []
+
+
+# ─── NetEase URL resolution (song id → artist + title) ───────────────────
+
+_NETEASE_DETAIL_SCRIPT = r"""
+import json, sys, requests
+
+song_id = sys.argv[1]
+s = requests.Session()
+s.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Referer": "https://music.163.com",
+})
+try:
+    resp = s.post(
+        "https://music.163.com/api/song/detail/",
+        data={"ids": "[" + song_id + "]", "limit": 1, "offset": 0},
+        timeout=10,
+    )
+    data = resp.json()
+    if data.get("code") != 200 or not data.get("songs"):
+        print(json.dumps({"error": "song not found"}))
+        sys.exit(1)
+    song = data["songs"][0]
+    artists = ", ".join(a["name"] for a in song.get("artists", []))
+    print(json.dumps({
+        "title": song.get("name", ""),
+        "artist": artists,
+        "album": song.get("album", {}).get("name", ""),
+    }, ensure_ascii=False))
+except Exception as e:
+    print(json.dumps({"error": str(e)}))
+    sys.exit(1)
+"""
+
+
+def resolve_netease_url(url, python=None):
+    """Resolve a NetEase song URL to an 'Artist Title' search query.
+
+    Returns a query string (e.g. "周杰伦 稻香") or None on failure.
+    """
+    song_id = extract_netease_song_id(url)
+    if not song_id:
+        return None
+    if python is None:
+        python, _ = _find_music_python()
+    if not python:
+        return None
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    try:
+        result = subprocess.run(
+            [python, "-c", _NETEASE_DETAIL_SCRIPT, song_id],
+            capture_output=True, text=True, timeout=15,
+            env=env, encoding="utf-8", errors="replace",
+        )
+    except Exception:
+        return None
+
+    stdout = result.stdout.strip()
+    if not stdout:
+        return None
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict) and "error" in data:
+        return None
+
+    artist = _clean_artist(data.get("artist", ""))
+    title = data.get("title", "").strip()
+    if artist and title:
+        return f"{artist} {title}"
+    if title:
+        return title
+    return None
 
 
 # Noise words to strip from Bilibili titles
@@ -1434,6 +1519,18 @@ def cmd_download(
     if is_spotify_url(query):
         debug_log("route: spotify → spotdl")
         return _download_via_spotdl(py, query, fmt, output, proxy, bitrate)
+
+    # ── NetEase URL → resolve to song name → Bilibili/YouTube ──
+    if is_netease_url(query):
+        debug_log("route: netease url → resolve → bilibili/youtube")
+        print("[NetEase] Resolving song info from URL...")
+        resolved = resolve_netease_url(query, python=py)
+        if resolved:
+            print(f"  Resolved: {resolved}")
+            query = resolved
+        else:
+            print("  [!] Could not resolve NetEase URL, using raw URL as query")
+        # Fall through to normal platform selection with resolved query
 
     if platform == "auto":
         platform = auto_select_platform(query)

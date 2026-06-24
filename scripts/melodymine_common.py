@@ -44,6 +44,11 @@ SPOTIFY_RE = re.compile(
     r"https?://(?:open\.spotify\.com|spotify\.link)/(?:track|album|playlist|artist)/"
 )
 
+# NetEase Cloud Music URL: music.163.com/song?id=xxx or y.music.126.com/n/song?ids=xxx
+NETEASE_RE = re.compile(
+    r"https?://(?:music\.163\.com|y\.music\.126\.com)/\S*[?&]ids?=(\d+)"
+)
+
 # Unified venv path shared by both helpers so dependencies are installed once.
 VENV_DIR = os.path.join(HOME, ".cache", "melodymine-venv")
 
@@ -530,6 +535,17 @@ def needs_proxy(platform):
 
 def is_spotify_url(text):
     return bool(SPOTIFY_RE.search(text))
+
+
+def is_netease_url(text):
+    """Check if text contains a NetEase Cloud Music song URL."""
+    return bool(NETEASE_RE.search(text))
+
+
+def extract_netease_song_id(text):
+    """Extract the numeric song ID from a NetEase URL. Returns str or None."""
+    m = NETEASE_RE.search(text)
+    return m.group(1) if m else None
 
 
 # ─── Misc ────────────────────────────────────────────────────────────────

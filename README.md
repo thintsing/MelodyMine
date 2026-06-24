@@ -46,6 +46,12 @@ Download from a Spotify URL:
 python scripts/music_helper.py download "https://open.spotify.com/track/..."
 ```
 
+Download from a NetEase URL (resolved to song name, then Bilibili/YouTube):
+
+```bash
+python scripts/music_helper.py download "https://music.163.com/song?id=185809"
+```
+
 Search without downloading:
 
 ```bash
@@ -112,6 +118,7 @@ Options:
 | Chinese query | Bilibili | No proxy expected. Falls back to YouTube if needed. |
 | English or non-Chinese query | YouTube | Try direct first; add proxy after network failure. |
 | Spotify URL | spotDL | Auto-installs spotDL on first use if possible. |
+| NetEase URL (`music.163.com`) | Resolved → Bilibili/YouTube | Song name extracted via NetEase API, then downloaded via the normal pipeline. |
 
 ## Advanced Spotify Operations
 
