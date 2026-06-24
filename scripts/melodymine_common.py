@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 # ─── Platform / Constants ────────────────────────────────────────────────
 
@@ -462,16 +463,54 @@ def sanitize_filename(name):
     return name
 
 
+# ─── Debug logging ───────────────────────────────────────────────────────
+
+DEBUG_LOG_DIR = os.path.join(HOME, ".melodymine")
+DEBUG_LOG_PATH = os.path.join(DEBUG_LOG_DIR, "last_run.log")
+_DEBUG_ENABLED = False
+
+
+def set_debug(enabled):
+    """Toggle debug logging. When enabled, write a session log to last_run.log."""
+    global _DEBUG_ENABLED
+    _DEBUG_ENABLED = enabled
+    if enabled:
+        os.makedirs(DEBUG_LOG_DIR, exist_ok=True)
+        with open(DEBUG_LOG_PATH, "w", encoding="utf-8") as f:
+            f.write(f"=== MelodyMine debug session — {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+
+
+def debug_log(message):
+    """Append a line to the debug log if debug mode is on."""
+    if not _DEBUG_ENABLED:
+        return
+    try:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(message.rstrip("\n") + "\n")
+    except Exception:
+        pass  # never let logging break the actual operation
+
+
+def is_debug():
+    return _DEBUG_ENABLED
+
+
 def run_streaming(cmd, env=None):
     """Run a subprocess, streaming combined stdout+stderr to print in real time.
 
-    Returns the exit code.
+    Returns the exit code. In debug mode, also tee output to last_run.log.
     """
+    if is_debug():
+        debug_log(f"$ {' '.join(str(c) for c in cmd)}")
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         env=env, encoding="utf-8", errors="replace",
     )
     for line in proc.stdout:
         print(line, end="")
+        if is_debug():
+            debug_log(line.rstrip("\n"))
     proc.wait()
+    if is_debug():
+        debug_log(f"[exit code {proc.returncode}]")
     return proc.returncode

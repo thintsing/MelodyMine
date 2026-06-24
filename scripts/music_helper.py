@@ -32,6 +32,7 @@ from melodymine_common import (
     SPOTIFY_RE,
     auto_select_platform,
     check_module,
+    debug_log,
     find_ffmpeg,
     find_python,
     is_chinese,
@@ -41,6 +42,7 @@ from melodymine_common import (
     proxy_to_env,
     run_streaming,
     sanitize_filename,
+    set_debug,
 )
 
 # ─── Dependencies ────────────────────────────────────────────────────────
@@ -1264,8 +1266,61 @@ def cmd_check():
     print("    - Bilibili  (Chinese songs, no proxy needed)")
     print("    - YouTube   (English songs, proxy optional — needed in China)")
     print("    - Spotify URL  (optional, via spotDL)")
+
+    # ── External API health probe ──
+    print("\n  External API reachability:")
+    _check_api_health(py)
+
     print("\n=== Ready! ===")
     return True
+
+
+def _check_api_health(python):
+    """Concurrently probe the external APIs MelodyMine depends on.
+
+    Reports each as [OK]/[FAIL] with latency, so users can self-diagnose
+    whether a download failure is caused by a blocked/dead API rather than
+    a local issue. Read-only, never installs anything, never blocks long.
+    """
+    import urllib.request
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    probes = {
+        "Bilibili": "https://api.bilibili.com/x/web-interface/nav",
+        "NetEase":  "https://music.163.com",
+        "iTunes":   "https://itunes.apple.com/search?term=test&limit=1",
+        "MusicBrainz": "https://musicbrainz.org/ws/2/recording/?query=test&limit=1&fmt=json",
+    }
+
+    def _probe(name, url):
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", "MelodyMine/1.0 (health check)")
+            t0 = time.time()
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                resp.read(1)  # read one byte to confirm response
+            ms = (time.time() - t0) * 1000
+            return name, True, f"{ms:.0f}ms"
+        except Exception as e:
+            return name, False, str(e)[:60]
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_probe, n, u) for n, u in probes.items()]
+        results = {}
+        for fut in as_completed(futures, timeout=12):
+            try:
+                name, ok, info = fut.result()
+                results[name] = (ok, info)
+            except Exception:
+                pass  # timeout on a single probe
+
+    for name in probes:  # print in stable order
+        if name in results:
+            ok, info = results[name]
+            status = "[OK]  " if ok else "[FAIL]"
+            print(f"    {status} {name:12s} {info}")
+        else:
+            print(f"    [FAIL] {name:12s} timed out (>12s)")
 
 
 def cmd_search(query, platform="auto", limit=5, proxy=None):
@@ -1336,8 +1391,13 @@ def cmd_download(
     query, platform="auto", fmt="mp3", output=None,
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
     no_metadata=False, cookies=None, dry_run=False, json_output=False,
+    debug=False,
 ):
     """Download a song with automatic platform selection and fallback."""
+    if debug:
+        set_debug(True)
+        debug_log(f"cmd_download: query={query!r} platform={platform} fmt={fmt} proxy={proxy}")
+
     if dry_run:
         plan = _download_plan(
             query, platform, fmt, output, proxy, bitrate, index,
@@ -1354,12 +1414,16 @@ def cmd_download(
         print("ERROR: No Python with yt-dlp found. Run 'setup' first:")
         print("  python scripts/music_helper.py setup")
         sys.exit(1)
+    debug_log(f"python={py}")
 
     # ── Spotify URL → spotDL ──
     if is_spotify_url(query):
+        debug_log("route: spotify → spotdl")
         return _download_via_spotdl(py, query, fmt, output, proxy, bitrate)
 
     if platform == "auto":
+        platform = auto_select_platform(query)
+        debug_log(f"auto-selected platform: {platform}")
         platform = auto_select_platform(query)
 
     if not output:
@@ -1622,6 +1686,8 @@ Examples:
                       help="Print the command that would run without executing")
     p_dl.add_argument("--json", action="store_true",
                       help="Output machine-readable JSON (use with --dry-run or after download)")
+    p_dl.add_argument("--debug", action="store_true",
+                      help="Write a session log to ~/.melodymine/last_run.log for troubleshooting")
 
     args = parser.parse_args()
 
@@ -1647,6 +1713,7 @@ Examples:
             no_metadata=args.no_metadata,
             dry_run=args.dry_run,
             json_output=args.json,
+            debug=args.debug,
         )
         # Emit JSON for non-dry-run successful downloads (dry-run already emitted).
         if args.json and not args.dry_run and isinstance(result, dict):
