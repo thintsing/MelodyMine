@@ -107,7 +107,8 @@ python scripts/music_helper.py download "query" [options]
 
 Options:
   --platform {auto,bilibili,youtube}  Default: auto
-  --format {mp3,flac,m4a,opus,wav,vorbis}
+  --format {auto,mp3,flac,m4a,opus,wav,vorbis}
+                                      Default: auto (flac if lossless, else mp3 320K)
   --output PATH
   --proxy URL                         e.g. socks5://host:port
   --cookies PATH                      cookies.txt for YouTube checks

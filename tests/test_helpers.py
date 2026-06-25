@@ -31,9 +31,11 @@ from melodymine_common import (  # noqa: E402
     sanitize_filename,
 )
 from music_helper import (  # noqa: E402
+    _auto_fmt_from_codec,
     _clean_artist,
     _is_accompaniment,
     _norm_cn,
+    _resolve_auto_fmt,
     parse_bili_title,
     parse_search_query,
     rank_bili_results,
@@ -374,6 +376,74 @@ class TestRankBiliResults(unittest.TestCase):
 
     def test_empty(self):
         self.assertEqual(rank_bili_results([]), [])
+
+
+class TestAutoFmtFromCodec(unittest.TestCase):
+    """_auto_fmt_from_codec: lossless codec → flac, lossy → mp3 320K."""
+
+    def test_flac_is_lossless(self):
+        fmt, bitrate, _ = _auto_fmt_from_codec("flac")
+        self.assertEqual(fmt, "flac")
+        self.assertIsNone(bitrate)
+
+    def test_alac_is_lossless(self):
+        fmt, bitrate, _ = _auto_fmt_from_codec("alac")
+        self.assertEqual(fmt, "flac")
+        self.assertIsNone(bitrate)
+
+    def test_pcm_is_lossless(self):
+        fmt, bitrate, _ = _auto_fmt_from_codec("pcm_s16le")
+        self.assertEqual(fmt, "flac")
+
+    def test_aac_is_lossy(self):
+        fmt, bitrate, _ = _auto_fmt_from_codec("mp4a.40.2")
+        self.assertEqual(fmt, "mp3")
+        self.assertEqual(bitrate, "320K")
+
+    def test_opus_is_lossy(self):
+        fmt, bitrate, _ = _auto_fmt_from_codec("opus")
+        self.assertEqual(fmt, "mp3")
+        self.assertEqual(bitrate, "320K")
+
+    def test_unknown_codec_is_lossy(self):
+        fmt, bitrate, _ = _auto_fmt_from_codec("someunknown")
+        self.assertEqual(fmt, "mp3")
+        self.assertEqual(bitrate, "320K")
+
+    def test_empty_codec_is_lossy(self):
+        fmt, bitrate, _ = _auto_fmt_from_codec("")
+        self.assertEqual(fmt, "mp3")
+        self.assertEqual(bitrate, "320K")
+
+    def test_none_codec_is_lossy(self):
+        fmt, bitrate, _ = _auto_fmt_from_codec(None)
+        self.assertEqual(fmt, "mp3")
+        self.assertEqual(bitrate, "320K")
+
+
+class TestResolveAutoFmt(unittest.TestCase):
+    """_resolve_auto_fmt: user bitrate override wins over auto-chosen."""
+
+    def test_user_bitrate_overrides_lossless(self):
+        # flac source, but user requests a bitrate → keep flac fmt, use user br
+        fmt, bitrate, _ = _resolve_auto_fmt("flac", "1411K")
+        self.assertEqual(fmt, "flac")
+        self.assertEqual(bitrate, "1411K")
+
+    def test_user_bitrate_overrides_lossy(self):
+        fmt, bitrate, _ = _resolve_auto_fmt("opus", "128K")
+        self.assertEqual(fmt, "mp3")
+        self.assertEqual(bitrate, "128K")
+
+    def test_no_user_bitrate_uses_auto_lossy(self):
+        fmt, bitrate, _ = _resolve_auto_fmt("opus", None)
+        self.assertEqual(fmt, "mp3")
+        self.assertEqual(bitrate, "320K")
+
+    def test_no_user_bitrate_uses_auto_lossless(self):
+        fmt, bitrate, _ = _resolve_auto_fmt("flac", None)
+        self.assertEqual(fmt, "flac")
+        self.assertIsNone(bitrate)
 
 
 if __name__ == "__main__":

@@ -124,7 +124,7 @@ python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookie
 `music_helper.py download` supports:
 
 - `--platform {auto,bilibili,youtube}`: default `auto`.
-- `--format {mp3,flac,m4a,opus,wav,vorbis}`: default `flac`.
+- `--format {auto,mp3,flac,m4a,opus,wav,vorbis}`: default `auto`. `auto` probes the source codec: flac if lossless (flac/alac/wav/pcm), else mp3 320K — no fake-lossless upcast.
 - `--output PATH`: default platform music folder.
 - `--proxy URL`: for YouTube or Spotify download networking.
 - `--cookies PATH`: cookies.txt for YouTube bot/sign-in checks.

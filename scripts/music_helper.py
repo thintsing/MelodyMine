@@ -157,8 +157,24 @@ def _download_plan(
     if not output:
         output = DEFAULT_OUTPUT
 
+    # ``auto`` is resolved at runtime by probing the source codec (network).
+    # The dry-run is side-effect-free, so it can't probe — substitute a
+    # representative concrete format so the printed command is valid, keep
+    # ``format`` as ``auto`` in the JSON to reflect user intent, and note
+    # that the real choice happens at runtime.
+    auto_note = None
+    cmd_fmt, cmd_bitrate = fmt, bitrate
+    if fmt == "auto":
+        cmd_fmt, cmd_bitrate, _ = _resolve_auto_fmt(None, bitrate)
+        auto_note = ("Format 'auto' resolves at runtime by probing the source "
+                     "codec: flac if lossless, else mp3 320K. "
+                     "Preview command uses mp3 as a representative.")
+
     if is_spotify_url(query):
-        command = _build_spotdl_cmd("python", query, output, fmt, bitrate, proxy)
+        command = _build_spotdl_cmd("python", query, output, cmd_fmt, cmd_bitrate, proxy)
+        notes = ["Spotify URLs are handled by spotDL."]
+        if auto_note:
+            notes.append(auto_note)
         return {
             "ok": True,
             "dry_run": True,
@@ -170,7 +186,7 @@ def _download_plan(
             "proxy": proxy,
             "cookies": cookies,
             "command": command,
-            "notes": ["Spotify URLs are handled by spotDL."],
+            "notes": notes,
         }
 
     # NetEase URLs are resolved at runtime (requires network), so dry-run just notes it.
@@ -185,7 +201,7 @@ def _download_plan(
         else:
             src = "Bandcamp"
         command = _build_ytdlp_cmd(
-            "python", query, output, fmt, bitrate,
+            "python", query, output, cmd_fmt, cmd_bitrate,
             embed_thumbnail=embed_thumbnail, proxy=proxy, cookies=cookies,
             index=index,
         )
@@ -203,7 +219,7 @@ def _download_plan(
             "embed_thumbnail": embed_thumbnail,
             "metadata": not no_metadata,
             "command": command,
-            "notes": [f"{src}: direct URL download via yt-dlp (no search step)."],
+            "notes": [f"{src}: direct URL download via yt-dlp (no search step)."] + ([auto_note] if auto_note else []),
         }
 
     selected = auto_select_platform(query) if platform == "auto" else platform
@@ -221,12 +237,15 @@ def _download_plan(
         notes.append("NetEase URL: resolved to song name at runtime, then downloaded via Bilibili/YouTube.")
 
     command = _build_ytdlp_cmd(
-        "python", url_slot, output, fmt, bitrate,
+        "python", url_slot, output, cmd_fmt, cmd_bitrate,
         embed_thumbnail=embed_thumbnail,
         bili_ua=(selected == "bilibili"),
         index=index, proxy=proxy, cookies=cookies,
         # ffmpeg_location omitted on dry-run — it's a runtime-resolved path
     )
+
+    if auto_note:
+        notes.append(auto_note)
 
     return {
         "ok": True,
@@ -1231,6 +1250,121 @@ def _ffmpeg_convert(ffmpeg_exe, raw_path, final_path, fmt, bitrate=None):
     return True
 
 
+# ─── Auto format: detect lossless vs lossy source ────────────────────────
+
+# Codec substrings that indicate a genuinely lossless source stream.
+_LOSSLESS_CODEC_RE = re.compile(r"flac|alac|pcm_|\bpcm\b|wav|aiff|truehd", re.IGNORECASE)
+
+
+def _auto_fmt_from_codec(codec):
+    """Decide the output format + bitrate for ``--format auto``.
+
+    Real lossless sources (flac/alac/wav/pcm) are kept as flac; everything
+    else (AAC/Opus/MP3) is encoded to mp3 320K — no more fake-lossless upcast.
+
+    Returns ``(fmt, bitrate, reason)``.
+    """
+    c = codec or ""
+    if c and _LOSSLESS_CODEC_RE.search(c):
+        return "flac", None, f"源音频 {c} 为无损 → 保留无损 (flac)"
+    return "mp3", "320K", (f"源音频 {c} 为有损 → mp3 320K" if c else "源音频格式未知 → 按 mp3 320K 处理")
+
+
+def _bili_resolve_audio(bvid, python=None):
+    """Resolve a Bilibili video to (audio_url, codec) of its best audio stream.
+
+    Uses the official playurl API (cheap, no yt-dlp). Returns (None, None) on
+    failure. Shared by the auto-format probe and the Bilibili API direct
+    download path.
+    """
+    import urllib.request
+    try:
+        view_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+        view_req = urllib.request.Request(view_url)
+        view_req.add_header("User-Agent", BILI_UA)
+        with urllib.request.urlopen(view_req, timeout=15) as resp:
+            vd = json.loads(resp.read().decode("utf-8"))["data"]
+            aid, cid = vd["aid"], vd["cid"]
+        playurl = (
+            "https://api.bilibili.com/x/player/playurl"
+            f"?avid={aid}&cid={cid}&qn=16&fnver=0&fnval=4048&fourk=1"
+        )
+        play_req = urllib.request.Request(playurl)
+        play_req.add_header("User-Agent", BILI_UA)
+        play_req.add_header("Referer", "https://www.bilibili.com/")
+        with urllib.request.urlopen(play_req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None, None
+    audio_streams = data.get("data", {}).get("dash", {}).get("audio", [])
+    audio_streams.sort(key=lambda s: s.get("bandwidth", 0), reverse=True)
+    if not audio_streams:
+        return None, None
+    return audio_streams[0].get("baseUrl"), audio_streams[0].get("codecs", "")
+
+
+def _probe_ytdlp_codec(python, target, index=1, timeout=30):
+    """Probe the audio codec yt-dlp would download for ``target``.
+
+    Runs ``yt-dlp -J`` (metadata only, no download) and inspects the best
+    audio-only format. Returns a codec string (e.g. ``flac``, ``opus``,
+    ``mp4a.40.2``) or None on failure.
+    """
+    cmd = [
+        python, "-m", "yt_dlp", "-J", "--no-warnings",
+        "--playlist-items", str(index), target,
+    ]
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    try:
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+            env=env, encoding="utf-8", errors="replace",
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except Exception:
+        return None
+    # Playlist / search result → pick the chosen entry.
+    if isinstance(data, dict) and data.get("_type") == "playlist":
+        entries = [e for e in (data.get("entries") or []) if e]
+        if not entries:
+            return None
+        data = entries[min(index - 1, len(entries) - 1)]
+    if not isinstance(data, dict):
+        return None
+    # requested_formats = what yt-dlp actually selected (most accurate).
+    req = data.get("requested_formats") or []
+    audio_req = [f for f in req if f.get("vcodec") == "none"]
+    if audio_req:
+        return audio_req[0].get("acodec") or audio_req[0].get("ext")
+    # Otherwise pick the best audio-only format from the full list.
+    formats = data.get("formats") or []
+    audio_fmts = [
+        f for f in formats
+        if f.get("vcodec") == "none" and f.get("acodec") and f.get("acodec") != "none"
+    ]
+    pool = audio_fmts or formats
+    if not pool:
+        return data.get("acodec") or data.get("ext")
+    best = max(pool, key=lambda f: (f.get("abr") or 0))
+    return best.get("acodec") or best.get("ext")
+
+
+def _resolve_auto_fmt(codec, user_bitrate):
+    """Resolve ``auto`` → concrete (fmt, bitrate) honoring a user override.
+
+    ``user_bitrate`` (may be None) always wins over the auto-chosen bitrate.
+    """
+    fmt, auto_br, reason = _auto_fmt_from_codec(codec)
+    bitrate = user_bitrate or auto_br
+    return fmt, bitrate, reason
+
+
 # ─── Bilibili API Direct Download (Tier 2: bypasses yt-dlp 412) ──────────
 
 def _bili_api_download(bvid, output, fmt="flac", bitrate=None, python=None):
@@ -1239,43 +1373,21 @@ def _bili_api_download(bvid, output, fmt="flac", bitrate=None, python=None):
         python, _ = _find_music_python()
     if not python:
         return False
-    import urllib.request, urllib.error
+    import urllib.request
     print("    ↳ yt-dlp blocked (412) — trying Bilibili API direct download...")
 
-    # Step 1: Resolve aid + cid
-    view_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
-    view_req = urllib.request.Request(view_url)
-    view_req.add_header("User-Agent", BILI_UA)
-    try:
-        with urllib.request.urlopen(view_req, timeout=15) as resp:
-            vd = json.loads(resp.read().decode("utf-8"))["data"]
-            aid, cid = vd["aid"], vd["cid"]
-    except Exception as e:
-        print(f"    [!] Failed to get video info: {e}")
-        return False
-    print(f"    Resolved: aid={aid}, cid={cid}")
-
-    # Step 2: Get audio stream URL
-    playurl = f"https://api.bilibili.com/x/player/playurl?avid={aid}&cid={cid}&qn=16&fnver=0&fnval=4048&fourk=1"
-    play_req = urllib.request.Request(playurl)
-    play_req.add_header("User-Agent", BILI_UA)
-    play_req.add_header("Referer", "https://www.bilibili.com/")
-    try:
-        with urllib.request.urlopen(play_req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception as e:
-        print(f"    [!] Failed to get playurl: {e}")
-        return False
-    audio_streams = data.get("data", {}).get("dash", {}).get("audio", [])
-    audio_streams.sort(key=lambda s: s.get("bandwidth", 0), reverse=True)
-    if not audio_streams:
-        print("    [!] No audio streams")
-        return False
-    audio_url = audio_streams[0]["baseUrl"]
+    # Step 1+2: Resolve audio stream URL + codec (shared with auto-format probe).
+    audio_url, codec = _bili_resolve_audio(bvid, python=python)
     if not audio_url:
-        print("    [!] No baseUrl")
+        print("    [!] Could not resolve Bilibili audio stream (no audio streams)")
         return False
-    print(f"    Audio stream found (codec: {audio_streams[0].get('codecs', '?')})")
+    print(f"    Audio stream found (codec: {codec or '?'})")
+
+    # Resolve auto format from the real codec.
+    if fmt == "auto":
+        fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
+        print(f"    [auto] {reason}")
+    aid = bvid  # used for temp filename; aid unknown here without extra call
 
     # Step 3: Download
     os.makedirs(output, exist_ok=True)
@@ -1302,7 +1414,7 @@ def _bili_api_download(bvid, output, fmt="flac", bitrate=None, python=None):
         os.remove(raw_path)
         return False
 
-    # Step 4: Convert
+    # Step 4: Convert (or keep raw if target is m4a / lossless flac from flac source)
     ffmpeg_exe = find_ffmpeg(python)
     if not ffmpeg_exe or fmt == "m4a":
         final = os.path.join(output, f"bilibili_audio_{aid}.m4a")
@@ -1608,6 +1720,10 @@ def cmd_download(
     # ── Spotify URL → spotDL ──
     if is_spotify_url(query):
         debug_log("route: spotify → spotdl")
+        # spotDL downloads via YouTube (lossy) → auto resolves to mp3.
+        if fmt == "auto":
+            fmt, bitrate, reason = _resolve_auto_fmt("opus", bitrate)
+            debug_log(f"[auto] spotify: {reason}")
         return _download_via_spotdl(py, query, fmt, output, proxy, bitrate)
 
     # ── NetEase URL → resolve → try direct audio → fallback to Bilibili/YouTube ──
@@ -1692,6 +1808,12 @@ def cmd_download(
         print()
         print("[2/3] Downloading via yt-dlp...")
 
+        # Resolve auto format from the real audio codec (Bilibili playurl API).
+        if fmt == "auto":
+            _, codec = _bili_resolve_audio(item["bvid"], python=py)
+            fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
+            print(f"  [auto] {reason}")
+
         ok = _ytdlp_download(
             py, url, output, fmt, bitrate, embed_thumbnail,
             bili_ua=True, index=1, cookies=cookies,
@@ -1770,6 +1892,12 @@ def _do_youtube_download(
     print("=" * 60)
     print()
 
+    # Resolve auto format by probing the source codec (metadata only, no download).
+    if fmt == "auto":
+        codec = _probe_ytdlp_codec(py, search_query, index=index)
+        fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
+        print(f"  [auto] {reason}")
+
     ok = _ytdlp_download(
         py, search_query, output, fmt, bitrate, embed_thumbnail,
         proxy=proxy, index=index, cookies=cookies,
@@ -1843,6 +1971,12 @@ def _download_direct(
     print("=" * 60)
     print()
 
+    # Resolve auto format by probing the source codec (metadata only, no download).
+    if fmt == "auto":
+        codec = _probe_ytdlp_codec(py, url, index=index)
+        fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
+        print(f"  [auto] {reason}")
+
     ok = _ytdlp_download(
         py, url, output, fmt, bitrate, embed_thumbnail,
         proxy=proxy, index=index, cookies=cookies,
@@ -1889,6 +2023,11 @@ def _netease_direct_download(song_id, song_name, output, fmt, bitrate, python):
 
     outer_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
     print("    ↳ Trying NetEase direct audio...")
+
+    # The outer URL always serves 128k mp3 — auto resolves to mp3 (no upcast).
+    if fmt == "auto":
+        fmt, bitrate, reason = _resolve_auto_fmt("mp3", bitrate)
+        print(f"    [auto] {reason}")
 
     # Follow the redirect to check if we get audio or a 404 page
     req = urllib.request.Request(outer_url)
@@ -2045,7 +2184,9 @@ Examples:
     p_dl = sub.add_parser("download", help="Download a song")
     p_dl.add_argument("query", help="Song name, artist, Spotify URL, or search query")
     p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube"])
-    p_dl.add_argument("--format", default="flac", choices=["mp3", "flac", "m4a", "opus", "wav", "vorbis"])
+    p_dl.add_argument("--format", default="auto",
+                      choices=["auto", "mp3", "flac", "m4a", "opus", "wav", "vorbis"],
+                      help="Output format. 'auto' probes the source: flac if lossless, else mp3 320K")
     p_dl.add_argument("--output", default=None, help="Output dir (default: ~/Music/MelodyMine)")
     p_dl.add_argument("--proxy", default=None, help="Proxy for YouTube (e.g. socks5://host:port)")
     p_dl.add_argument("--cookies", default=None, help="cookies.txt path for YouTube sign-in/bot checks")
