@@ -742,6 +742,38 @@ def resolve_netease_url(url, python=None):
     return None
 
 
+# ─── Bilibili result ranking (deprioritise accompaniment/instrumental) ───
+
+# Keywords that indicate a search result is an accompaniment, instrumental, or
+# karaoke version rather than the original song with vocals.
+_ACCOMPANIMENT_RE = re.compile(
+    r"伴奏|纯音乐|卡拉OK|卡拉ok|karaoke|instrumental|backing\s*track|"
+    r"accompaniment|off\s*vocal|无人声|消音|静音版?",
+    re.IGNORECASE,
+)
+
+
+def _is_accompaniment(title):
+    """Return True if a Bilibili video title looks like an accompaniment /
+    instrumental / karaoke version (no lead vocals)."""
+    return bool(_ACCOMPANIMENT_RE.search(title or ""))
+
+
+def rank_bili_results(results):
+    """Reorder Bilibili search results so non-accompaniment entries come first.
+
+    Within each group (vocal / accompaniment) results keep their original
+    API order, which already reflects Bilibili relevance. This means the
+    default --index 1 picks the most relevant *vocal* version instead of a
+    backing track that happened to rank highest.
+
+    Returns a new list; does not mutate the input. Prints nothing.
+    """
+    vocal = [r for r in results if not _is_accompaniment(r.get("title", ""))]
+    accomp = [r for r in results if _is_accompaniment(r.get("title", ""))]
+    return vocal + accomp
+
+
 # Noise patterns to strip from Bilibili titles (pre-compiled for performance).
 _NOISE_PATTERNS = [re.compile(p) for p in [
     r"完整版", r"无损音质", r"无损", r"高清", r"超清", r"高品质",
@@ -1495,11 +1527,14 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
         # Use wbi API search (more reliable than yt-dlp's bilisearch)
         results = bili_search(query, limit=limit)
         if results:
+            results = rank_bili_results(results)
             for i, r in enumerate(results, 1):
-                print(f"  {i}. [{r['duration']}] {r['title']}")
+                tag = " [伴奏/纯音乐]" if _is_accompaniment(r.get("title", "")) else ""
+                print(f"  {i}. [{r['duration']}] {r['title']}{tag}")
                 print(f"     Uploader: {r['uploader']} | Plays: {r['play']} | bvid: {r['bvid']}")
                 print()
             print(f"Top {len(results)} results. Use --index N to download a specific result.")
+            print("Tip: 伴奏/纯音乐结果已排到列表后方，默认下载带人声版本。")
         else:
             print("No results or search failed.")
             print("Tip: Try --platform youtube --proxy socks5://host:port")
@@ -1641,6 +1676,12 @@ def cmd_download(
                 py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
                 no_metadata=no_metadata, cookies=cookies,
             )
+
+        # Reorder so vocal versions rank above accompaniment/instrumental ones.
+        results = rank_bili_results(results)
+        skipped_accomp = sum(1 for r in results if _is_accompaniment(r.get("title", "")))
+        if skipped_accomp:
+            print(f"  (优先选择带人声版本，已将 {skipped_accomp} 个伴奏/纯音乐结果排后)")
 
         # Step 2: Pick result and download
         item = results[min(index - 1, len(results) - 1)]

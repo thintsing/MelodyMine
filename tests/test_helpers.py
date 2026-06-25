@@ -32,9 +32,11 @@ from melodymine_common import (  # noqa: E402
 )
 from music_helper import (  # noqa: E402
     _clean_artist,
+    _is_accompaniment,
     _norm_cn,
     parse_bili_title,
     parse_search_query,
+    rank_bili_results,
 )
 
 
@@ -318,6 +320,60 @@ class TestIsChinese(unittest.TestCase):
 
     def test_punctuation_only(self):
         self.assertFalse(is_chinese("--- ..."))
+
+
+class TestIsAccompaniment(unittest.TestCase):
+
+    def test_chinese_accompaniment(self):
+        self.assertTrue(_is_accompaniment("稻香 伴奏"))
+        self.assertTrue(_is_accompaniment("稻香 纯音乐版"))
+        self.assertTrue(_is_accompaniment("稻香 卡拉OK"))
+
+    def test_english_accompaniment(self):
+        self.assertTrue(_is_accompaniment("Dao Xiang Karaoke"))
+        self.assertTrue(_is_accompaniment("Blinding Lights Instrumental"))
+        self.assertTrue(_is_accompaniment("Song backing track"))
+        self.assertTrue(_is_accompaniment("off vocal version"))
+
+    def test_vocal_song(self):
+        self.assertFalse(_is_accompaniment("周杰伦《稻香》完整版"))
+        self.assertFalse(_is_accompaniment("The Weeknd - Blinding Lights Official MV"))
+
+    def test_empty(self):
+        self.assertFalse(_is_accompaniment(""))
+        self.assertFalse(_is_accompaniment(None))
+
+
+class TestRankBiliResults(unittest.TestCase):
+
+    def _mk(self, title, plays=0):
+        return {"bvid": "x", "aid": 1, "title": title, "duration": "3:00", "play": plays, "uploader": "u"}
+
+    def test_vocal_ranked_before_accompaniment(self):
+        results = [
+            self._mk("稻香 伴奏"),
+            self._mk("周杰伦《稻香》完整版"),
+        ]
+        ranked = rank_bili_results(results)
+        self.assertEqual(ranked[0]["title"], "周杰伦《稻香》完整版")
+        self.assertEqual(ranked[1]["title"], "稻香 伴奏")
+
+    def test_all_vocal_unchanged_order(self):
+        results = [self._mk("歌A"), self._mk("歌B")]
+        self.assertEqual([r["title"] for r in rank_bili_results(results)], ["歌A", "歌B"])
+
+    def test_all_accompaniment_unchanged_order(self):
+        results = [self._mk("歌A 伴奏"), self._mk("歌B 纯音乐")]
+        self.assertEqual([r["title"] for r in rank_bili_results(results)], ["歌A 伴奏", "歌B 纯音乐"])
+
+    def test_does_not_mutate_input(self):
+        results = [self._mk("伴奏"), self._mk("原曲")]
+        original = list(results)
+        rank_bili_results(results)
+        self.assertEqual([r["title"] for r in results], [r["title"] for r in original])
+
+    def test_empty(self):
+        self.assertEqual(rank_bili_results([]), [])
 
 
 if __name__ == "__main__":
