@@ -1303,7 +1303,7 @@ def _bili_resolve_audio(bvid, python=None):
     return audio_streams[0].get("baseUrl"), audio_streams[0].get("codecs", "")
 
 
-def _probe_ytdlp_codec(python, target, index=1, timeout=30):
+def _probe_ytdlp_codec(python, target, index=1, timeout=30, proxy=None, cookies=None):
     """Probe the audio codec yt-dlp would download for ``target``.
 
     Runs ``yt-dlp -J`` (metadata only, no download) and inspects the best
@@ -1314,6 +1314,10 @@ def _probe_ytdlp_codec(python, target, index=1, timeout=30):
         python, "-m", "yt_dlp", "-J", "--no-warnings",
         "--playlist-items", str(index), target,
     ]
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+    if cookies:
+        cmd.extend(["--cookies", cookies])
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     try:
@@ -1894,7 +1898,7 @@ def _do_youtube_download(
 
     # Resolve auto format by probing the source codec (metadata only, no download).
     if fmt == "auto":
-        codec = _probe_ytdlp_codec(py, search_query, index=index)
+        codec = _probe_ytdlp_codec(py, search_query, index=index, proxy=proxy, cookies=cookies)
         fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
         print(f"  [auto] {reason}")
 
@@ -1973,7 +1977,7 @@ def _download_direct(
 
     # Resolve auto format by probing the source codec (metadata only, no download).
     if fmt == "auto":
-        codec = _probe_ytdlp_codec(py, url, index=index)
+        codec = _probe_ytdlp_codec(py, url, index=index, proxy=proxy, cookies=cookies)
         fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
         print(f"  [auto] {reason}")
 
