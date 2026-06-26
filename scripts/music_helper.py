@@ -51,9 +51,10 @@ from melodymine_common import (
 )
 
 import bili_client
-import netease_client
-import mbrainz_client
 import cover_client
+import mbrainz_client
+import netease_client
+import ytmusic_client
 
 # ─── Dependencies ────────────────────────────────────────────────────────
 
@@ -1288,6 +1289,20 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
         else:
             print("No results or search failed.")
             print("Tip: Try --platform youtube --proxy socks5://host:port")
+    elif platform == "ytmusic":
+        results = ytmusic_client.search(query, limit=limit)
+        if results:
+            for i, r in enumerate(results, 1):
+                dur = r.get("duration") or "?"
+                dur_str = f"{dur//60}:{dur%60:02d}" if isinstance(dur, int) else str(dur)
+                print(f"  {i}. [{dur_str}] {r['title']}")
+                print(f"     Artist: {r['artist']}" + (f" | Album: {r['album']}" if r['album'] else ""))
+                print(f"     {r['url']}")
+                print()
+            print(f"Top {len(results)} results. Use --index N to download a specific result.")
+        else:
+            print("No results (ytmusicapi returned empty).")
+            print("Tip: Try --platform youtube or --proxy socks5://host:port")
     else:
         # YouTube search via yt-dlp
         search_query = f"ytsearch:{query}"
@@ -1546,12 +1561,96 @@ def cmd_download(
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
 
+    # ── YouTube Music (ytmusicapi search + yt-dlp download) ──
+    if platform == "ytmusic":
+        return _do_ytmusic_download(
+            py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+            no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+        )
+
     # ── YouTube ──
     else:
         return _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
+
+
+def _do_ytmusic_download(
+    py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+    no_metadata=False, cookies=None, before_snapshot=None,
+):
+    """Download via YouTube Music API search + yt-dlp direct URL.
+
+    Uses ``ytmusicapi`` for search (no cookies needed), then hands the
+    ``music.youtube.com/watch?v=ID`` URL to yt-dlp.  Falls back to the
+    standard YouTube yt-dlp search path if ytmusic search fails.
+    """
+    print("=" * 60)
+    print(f"  Platform : YouTube Music (ytmusicapi search)")
+    print(f"  Query    : {query}")
+    print(f"  Format   : {fmt}")
+    print(f"  Output   : {output}")
+    print(f"  Proxy    : none (direct connection)")
+    print("=" * 60)
+    print()
+
+    # Step 1: ytmusicapi search
+    print("[1/2] Searching YouTube Music...")
+    results = ytmusic_client.search(query, limit=max(index, 5))
+
+    if not results:
+        print("  YouTube Music search returned no results.")
+        print("  Falling back to standard YouTube search...")
+        return _do_youtube_download(
+            py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+            no_metadata=no_metadata, cookies=cookies, before_snapshot=before_snapshot,
+        )
+
+    # Show results and let user pick
+    for i, r in enumerate(results, 1):
+        dur = r.get("duration")
+        dur_str = f"{dur//60}:{dur%60:02d}" if isinstance(dur, int) else str(dur or "?")
+        tag = " [selected]" if i == index else ""
+        print(f"  {i}. [{dur_str}] {r['title']}{tag}")
+        print(f"     Artist: {r['artist']}" + (f" | Album: {r['album']}" if r['album'] else ""))
+        print()
+
+    # Step 2: download
+    item = results[min(index - 1, len(results) - 1)]
+    video_id = item["videoId"]
+    music_url = f"https://music.youtube.com/watch?v={video_id}"
+    print(f"[2/2] Downloading via yt-dlp...")
+    print(f"  Source: {item['title']}")
+    print(f"  URL:    {music_url}")
+    print()
+
+    ok = _download_direct(
+        py, music_url, fmt, output, proxy, bitrate,
+        index=1, embed_thumbnail=embed_thumbnail, no_metadata=no_metadata,
+        cookies=cookies, before_snapshot=before_snapshot,
+    )
+    if ok:
+        return {
+            "ok": True,
+            "platform": "ytmusic",
+            "engine": "yt-dlp",
+            "query": query,
+            "source_url": music_url,
+            "format": fmt,
+            "output": output,
+            "proxy": proxy,
+            "cookies": cookies,
+            "metadata": not no_metadata,
+        }
+
+    # yt-dlp failed on music.youtube.com — fall back to standard YouTube
+    print("  yt-dlp failed on music.youtube.com URL.")
+    print("  Falling back to standard YouTube search...")
+    return _do_youtube_download(
+        py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+        no_metadata=no_metadata, cookies=cookies, before_snapshot=before_snapshot,
+    )
 
 
 def _do_youtube_download(
@@ -1871,7 +1970,7 @@ Examples:
 
     p_search = sub.add_parser("search", help="Search for songs (no download)")
     p_search.add_argument("query", help="Search query")
-    p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube"])
+    p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic"])
     p_search.add_argument("--limit", type=int, default=5)
     p_search.add_argument("--proxy", default=None)
 
@@ -1886,7 +1985,7 @@ Examples:
 
     p_dl = sub.add_parser("download", help="Download a song")
     p_dl.add_argument("query", help="Song name, artist, Spotify URL, or search query")
-    p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube"])
+    p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic"])
     p_dl.add_argument("--format", default="auto",
                       choices=["auto", "mp3", "flac", "m4a", "opus", "wav", "vorbis"],
                       help="Output format. 'auto' probes the source: flac if lossless, else mp3 320K")
