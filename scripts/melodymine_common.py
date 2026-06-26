@@ -591,6 +591,22 @@ def sanitize_filename(name):
     return name
 
 
+def derive_query_from_filename(filepath):
+    """Derive a metadata search query from an audio file's name.
+
+    Strips the extension, replaces dash separators (ASCII and CJK variants)
+    with spaces, and removes parenthetical / bracketed annotations such as
+    "(Live)" or "【MV】". Returns "" if nothing useful could be derived.
+
+    Shared by the ``meta`` commands of music_helper and spotify_helper so the
+    filename→query logic stays in one place.
+    """
+    base = os.path.splitext(os.path.basename(filepath))[0]
+    base = re.sub(r"\s*[\-－—–]\s*", " ", base)
+    base = re.sub(r"\s+\(.*?\)|\s+【.*?】|\s+\[.*?\]", "", base)
+    return base.strip()
+
+
 # ─── Debug logging ───────────────────────────────────────────────────────
 
 DEBUG_LOG_DIR = os.path.join(HOME, ".melodymine")

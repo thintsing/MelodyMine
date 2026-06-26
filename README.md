@@ -94,6 +94,13 @@ Use cookies when YouTube asks for sign-in or bot confirmation:
 python scripts/music_helper.py download "Artist Song" --cookies "D:\path\cookies.txt"
 ```
 
+Update metadata for an already-downloaded file:
+
+```bash
+python scripts/music_helper.py meta "D:\Music\song.mp3"
+python scripts/music_helper.py meta "D:\Music\song.mp3" --query "周杰伦 稻香"
+```
+
 Check dependencies:
 
 ```bash
@@ -118,6 +125,13 @@ Options:
   --no-metadata
   --dry-run                           Preview command without executing
   --json                              Machine-readable JSON output
+
+python scripts/music_helper.py meta "filepath" [options]
+
+Options:
+  --query QUERY                       Search query for metadata lookup (default: derive from filename)
+  --no-thumbnail                      Skip cover art embedding
+  --json                              Machine-readable JSON output
 ```
 
 ## Platform Routing
@@ -139,6 +153,7 @@ python scripts/spotify_helper.py sync "https://open.spotify.com/playlist/..." --
 python scripts/spotify_helper.py save "https://open.spotify.com/album/..." --save-file album.spotdl
 python scripts/spotify_helper.py url "Artist - Song"
 python scripts/spotify_helper.py meta "D:\Music\song.mp3"
+python scripts/spotify_helper.py meta "D:\Music\song.mp3" --query "Artist - Song"
 ```
 
 See `references/usage.md` for spotDL option details and `references/config.md` for spotDL configuration fields.

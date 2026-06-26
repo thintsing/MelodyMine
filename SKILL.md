@@ -40,7 +40,15 @@ Use `scripts/spotify_helper.py` only for advanced Spotify operations such as pla
 python scripts/spotify_helper.py sync "https://open.spotify.com/playlist/..." --save-file playlist.spotdl
 python scripts/spotify_helper.py save "https://open.spotify.com/album/..." --save-file album.spotdl
 python scripts/spotify_helper.py meta "/path/to/song.mp3"
+python scripts/spotify_helper.py meta "/path/to/song.mp3" --query "Artist - Song"
 python scripts/spotify_helper.py url "Artist - Song"
+```
+
+You can also update metadata for any existing audio file with `music_helper.py meta`:
+
+```bash
+python scripts/music_helper.py meta "/path/to/song.mp3"
+python scripts/music_helper.py meta "/path/to/song.mp3" --query "周杰伦 稻香"
 ```
 
 Read `references/usage.md` only when the user needs advanced spotDL options. Read `references/config.md` only when editing or explaining spotDL configuration.
@@ -136,6 +144,12 @@ python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookie
 - `--json`: output machine-readable JSON (use with `--dry-run` or after a successful download).
 - `--debug`: write a session log to `~/.melodymine/last_run.log` for troubleshooting.
 
+`music_helper.py meta "filepath"` supports:
+
+- `--query QUERY`: search query for metadata lookup (default: derive from filename).
+- `--no-thumbnail`: skip cover art embedding.
+- `--json`: output machine-readable JSON after the update.
+
 ## Platform Behavior
 
 | Input | Primary Path | Notes |
@@ -157,7 +171,7 @@ Execute the first matching row. Do not explain the table to the user — just ru
 | YouTube `Sign in to confirm you're not a bot` | Ask the user to export cookies.txt (e.g. via "Get cookies.txt" browser extension for YouTube), then retry: `download "<query>" --cookies /path/cookies.txt`. |
 | Spotify `KeyError: 'uri'` | Extract the track name from the Spotify URL or ask the user for it, then download by name instead: `download "Artist Song"`. Do not retry the same Spotify URL. |
 | `No results` on any platform | Try: (1) `Artist Title` format, (2) force the other platform via `--platform`, (3) broaden the query. Try up to 2 variants before reporting failure to the user. |
-| Download succeeds but `metadata is wrong` | Retry once with `--no-metadata` to at least fix the filename, then offer the user a manual retry with a more exact `Artist Song` query. |
+| Download succeeds but `metadata is wrong` | Retry once with `--no-metadata` to at least fix the filename, then offer the user a manual retry with a more exact `Artist Song` query. For already-downloaded files, use `python scripts/music_helper.py meta "/path/to/song.mp3" --query "Artist Song"`. |
 | `spotdl` not installed / install failed | Fall back to searching the song name via `download "Artist Song"` (Bilibili/YouTube path). Do not block on spotDL. |
 
 General rules:

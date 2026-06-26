@@ -12,6 +12,8 @@ auto_select_platform, is_spotify_url, sanitize_filename, is_chinese.
 
 import os
 import sys
+import tempfile
+import time
 import unittest
 
 # Make the scripts directory importable regardless of CWD.
@@ -20,6 +22,7 @@ sys.path.insert(0, os.path.abspath(_SCRIPTS))
 
 from melodymine_common import (  # noqa: E402
     auto_select_platform,
+    derive_query_from_filename,
     extract_netease_song_id,
     is_bandcamp_url,
     is_chinese,
@@ -32,10 +35,14 @@ from melodymine_common import (  # noqa: E402
 )
 from music_helper import (  # noqa: E402
     _auto_fmt_from_codec,
+    _best_metadata_candidate,
     _clean_artist,
     _is_accompaniment,
+    _list_audio_files,
     _norm_cn,
     _resolve_auto_fmt,
+    _score_metadata_candidate,
+    find_downloaded_file,
     parse_bili_title,
     parse_search_query,
     rank_bili_results,
@@ -444,6 +451,229 @@ class TestResolveAutoFmt(unittest.TestCase):
         fmt, bitrate, _ = _resolve_auto_fmt("flac", None)
         self.assertEqual(fmt, "flac")
         self.assertIsNone(bitrate)
+
+
+class TestFindDownloadedFile(unittest.TestCase):
+    """find_downloaded_file: snapshot-based detection avoids the yt-dlp mtime bug.
+
+    yt-dlp sets each file's mtime to the source upload date, so a pre-existing
+    file can have a newer mtime than the just-downloaded one. Passing ``before``
+    (a snapshot taken before the download) must exclude pre-existing files so
+    metadata is never written to the wrong file.
+    """
+
+    def setUp(self):
+        self._td = tempfile.TemporaryDirectory()
+        self.dir = self._td.name
+
+    def tearDown(self):
+        self._td.cleanup()
+
+    def _touch(self, name, mtime=None):
+        path = os.path.join(self.dir, name)
+        with open(path, "wb") as f:
+            f.write(b"x")
+        if mtime is not None:
+            os.utime(path, (mtime, mtime))
+        return path
+
+    def test_before_snapshot_excludes_pre_existing(self):
+        # Pre-existing file with a FUTURE mtime (simulates yt-dlp upload-date).
+        future = time.time() + 10 * 365 * 24 * 3600
+        old = self._touch("old_upload_2025.flac", mtime=future)
+        before = _list_audio_files(self.dir)
+        # Download creates a new file whose mtime yt-dlp sets to an old date.
+        past = time.time() - 365 * 24 * 3600
+        new = self._touch("new_download.flac", mtime=past)
+        self.assertEqual(find_downloaded_file(self.dir, before=before), new)
+        self.assertNotEqual(find_downloaded_file(self.dir, before=before), old)
+
+    def test_no_before_returns_newest_ctime(self):
+        a = self._touch("a.mp3")
+        time.sleep(0.01)
+        b = self._touch("b.mp3")
+        # Without a snapshot, the most recently created file wins.
+        self.assertEqual(find_downloaded_file(self.dir), b)
+
+    def test_before_with_no_new_files_returns_none(self):
+        old = self._touch("old.mp3")
+        before = _list_audio_files(self.dir)
+        self.assertIsNone(find_downloaded_file(self.dir, before=before))
+
+    def test_ignores_non_audio_files(self):
+        before = _list_audio_files(self.dir)
+        self._touch("notes.txt")
+        self._touch("cover.jpg")
+        self.assertIsNone(find_downloaded_file(self.dir, before=before))
+
+    def test_nonexistent_dir_returns_none(self):
+        self.assertIsNone(find_downloaded_file("/no/such/dir/xyz"))
+
+    def test_empty_dir_returns_none(self):
+        self.assertIsNone(find_downloaded_file(self.dir))
+
+
+class TestDeriveQueryFromFilename(unittest.TestCase):
+    """derive_query_from_filename: shared filename→query logic for meta commands."""
+
+    def test_dash_separator_replaced(self):
+        self.assertEqual(derive_query_from_filename("/music/Artist - Title.mp3"), "Artist Title")
+
+    def test_cjk_dash_separator_replaced(self):
+        # Full-width / em dash variants are treated as separators.
+        self.assertEqual(derive_query_from_filename("周杰伦－稻香.flac"), "周杰伦 稻香")
+        self.assertEqual(derive_query_from_filename("周杰伦—稻香.flac"), "周杰伦 稻香")
+
+    def test_parenthetical_annotation_removed(self):
+        self.assertEqual(derive_query_from_filename("Song (Live).mp3"), "Song")
+
+    def test_bracket_annotation_removed(self):
+        self.assertEqual(derive_query_from_filename("Song 【MV】.flac"), "Song")
+        self.assertEqual(derive_query_from_filename("Song [Remaster].mp3"), "Song")
+
+    def test_strips_directory(self):
+        self.assertEqual(derive_query_from_filename("a/b/c.mp3"), "c")
+
+    def test_plain_name(self):
+        self.assertEqual(derive_query_from_filename("song.mp3"), "song")
+
+    def test_extension_stripped(self):
+        self.assertEqual(derive_query_from_filename("track.flac"), "track")
+
+
+class TestScoreMetadataCandidate(unittest.TestCase):
+    """_score_metadata_candidate: scores a metadata result against artist/title."""
+
+    def _mk(self, artist="周杰伦", title="稻香", album="", cover="", pic_url=""):
+        r = {"artist": artist, "title": title}
+        if album:
+            r["album"] = album
+        if cover:
+            r["cover"] = cover
+        if pic_url:
+            r["pic_url"] = pic_url
+        return r
+
+    # ── Exact match ──
+    def test_exact_match_full_score(self):
+        score = _score_metadata_candidate(
+            self._mk("周杰伦", "稻香"), "周杰伦", "稻香",
+        )
+        self.assertEqual(score, 25)  # 20 (artist exact) + 5 (title exact)
+
+    def test_exact_match_english(self):
+        score = _score_metadata_candidate(
+            self._mk("The Weeknd", "Blinding Lights"), "The Weeknd", "Blinding Lights",
+        )
+        self.assertEqual(score, 25)
+
+    # ── Partial matches ──
+    def test_artist_contains(self):
+        score = _score_metadata_candidate(
+            self._mk("周杰伦 & 蔡依林", "稻香"), "周杰伦", "稻香",
+        )
+        # artist contains: +8; title exact: +5
+        self.assertEqual(score, 13)
+
+    def test_title_contains(self):
+        score = _score_metadata_candidate(
+            self._mk("周杰伦", "稻香 (Live)"), "周杰伦", "稻香",
+        )
+        # artist exact: +20; title partial: +2
+        self.assertEqual(score, 22)
+
+    def test_no_match(self):
+        score = _score_metadata_candidate(
+            self._mk("林俊杰", "江南"), "周杰伦", "稻香",
+        )
+        self.assertEqual(score, 0)
+
+    # ── Collaboration aware (NetEase) ──
+    def test_collab_exact_artist_reduced(self):
+        # Comma-joined: exact artist match scores only 5 (not 20).
+        score = _score_metadata_candidate(
+            self._mk("周杰伦, 蔡依林", "稻香"), "周杰伦", "稻香",
+            collaboration_aware=True,
+        )
+        self.assertEqual(score, 10)  # 5 (artist) + 5 (title)
+
+    def test_collab_contains_raw_artist(self):
+        score = _score_metadata_candidate(
+            self._mk("周杰伦, 蔡依林", "稻香"), "周杰伦", "稻香",
+            collaboration_aware=True,
+        )
+        self.assertEqual(score, 10)
+
+    def test_collab_artist_not_found(self):
+        score = _score_metadata_candidate(
+            self._mk("林俊杰, 蔡依林", "稻香"), "周杰伦", "稻香",
+            collaboration_aware=True,
+        )
+        self.assertEqual(score, 5)  # only title exact
+
+    # ── Bonus fields (iTunes) ──
+    def test_bonus_cover_and_album(self):
+        score = _score_metadata_candidate(
+            self._mk("周杰伦", "稻香", album="魔杰座", cover="https://example.com/c.jpg"),
+            "周杰伦", "稻香", bonus_fields=True,
+        )
+        self.assertEqual(score, 30)  # 20 + 5 + 3 (cover) + 2 (album)
+
+    def test_bonus_no_extras(self):
+        score = _score_metadata_candidate(
+            self._mk("周杰伦", "稻香"), "周杰伦", "稻香", bonus_fields=True,
+        )
+        self.assertEqual(score, 25)
+
+    # ── Edge cases ──
+    def test_empty_fields(self):
+        # Empty strings match via Python's "in" operator ("'' in any_string" is
+        # always True), so an empty result against non-empty query still scores
+        # a tiny match via the title-prefix branch (+2).
+        score = _score_metadata_candidate(
+            self._mk("", ""), "周杰伦", "稻香",
+        )
+        self.assertEqual(score, 2)
+
+    def test_none_title_handled(self):
+        r = {"artist": "周杰伦", "title": None}
+        score = _score_metadata_candidate(r, "周杰伦", "稻香")
+        # Artist exact: 20; title (None→""): "" in "稻香" is True → +2
+        self.assertEqual(score, 22)
+
+
+class TestBestMetadataCandidate(unittest.TestCase):
+    """_best_metadata_candidate: picks the highest-scoring result."""
+
+    def test_picks_highest(self):
+        results = [
+            {"artist": "林俊杰", "title": "江南", "album": ""},
+            {"artist": "周杰伦", "title": "稻香", "album": "魔杰座"},
+            {"artist": "周杰伦", "title": "稻香 (Live)", "album": ""},
+        ]
+        best_score, best_data = _best_metadata_candidate(results, "周杰伦", "稻香")
+        self.assertEqual(best_data["artist"], "周杰伦")
+        self.assertEqual(best_data["title"], "稻香")
+        self.assertEqual(best_data["album"], "魔杰座")
+        self.assertEqual(best_score, 25)
+
+    def test_empty_returns_negative_one(self):
+        score, data = _best_metadata_candidate([], "周杰伦", "稻香")
+        self.assertEqual(score, -1)
+        self.assertIsNone(data)
+
+    def test_forwards_kwargs(self):
+        results = [
+            {"artist": "周杰伦, 蔡依林", "title": "稻香"},
+            {"artist": "周杰伦", "title": "稻香", "album": "魔杰座"},
+        ]
+        # Without collab: the comma-separated artist would win via "contains" (+8)
+        # because _clean_artist takes "周杰伦" from the split.
+        score, data = _best_metadata_candidate(results, "周杰伦", "稻香",
+                                                collaboration_aware=True)
+        # collab_aware: first result gets 5+5=10, second gets 20+5=25
+        self.assertEqual(data["artist"], "周杰伦")
+        self.assertGreater(score, 10)
 
 
 if __name__ == "__main__":

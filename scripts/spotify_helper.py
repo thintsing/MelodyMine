@@ -24,7 +24,7 @@ Usage:
     python spotify_helper.py sync "URL" --save-file x.spotdl          # Sync playlist
     python spotify_helper.py save "query"                              # Save metadata only
     python spotify_helper.py url "query"                               # Get YouTube URL
-    python spotify_helper.py meta "/path/song.mp3"                     # Update metadata
+    python spotify_helper.py meta "/path/song.mp3" [--query "Artist Song"]  # Update metadata
 """
 
 import argparse
@@ -37,6 +37,7 @@ from melodymine_common import (
     DEFAULT_OUTPUT,
     build_spotdl_proxy_args,
     check_module,
+    derive_query_from_filename,
     detect_python_with,
     find_ffmpeg,
     find_python,
@@ -45,6 +46,9 @@ from melodymine_common import (
     proxy_to_env,
     run_streaming,
 )
+
+# Metadata enhancement is shared with the main helper.
+from music_helper import enhance_metadata
 
 
 # --- Configuration ---
@@ -364,6 +368,8 @@ def main():
     parser.add_argument("--sponsor-block", action="store_true")
     parser.add_argument("--ffmpeg",
         help="Path to ffmpeg executable")
+    parser.add_argument("--query",
+        help="Search query for metadata lookup (used with 'meta'; defaults to filename)")
 
     args = parser.parse_args()
 
@@ -386,6 +392,31 @@ def main():
             print(f"\nBest match URL: {results[0]['url']}")
         else:
             print("[SEARCH] No results found")
+        return
+
+    if args.operation == "meta":
+        if not args.queries:
+            print("Error: meta requires a file path")
+            sys.exit(1)
+        filepath = args.queries[0]
+        if not os.path.isfile(filepath):
+            print(f"ERROR: File not found: {filepath}")
+            sys.exit(1)
+
+        query = args.query
+        if not query:
+            query = derive_query_from_filename(filepath)
+
+        output_dir = os.path.dirname(filepath) or "."
+        python = _get_python()
+        print("=" * 60)
+        print("  MelodyMine Spotify helper — Update metadata")
+        print("=" * 60)
+        print(f"  File  : {filepath}")
+        print(f"  Query : {query}")
+        print()
+        enhance_metadata(python, query, "", output_dir, embed_thumbnail=True, filepath=filepath)
+        print("\n[OK] Metadata update complete!")
         return
 
     if not args.queries:

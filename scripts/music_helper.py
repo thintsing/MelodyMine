@@ -35,6 +35,7 @@ from melodymine_common import (
     check_module,
     check_version_compat,
     debug_log,
+    derive_query_from_filename,
     extract_netease_song_id,
     find_ffmpeg,
     find_python,
@@ -852,16 +853,43 @@ def parse_bili_title(title):
     return artist, song_name
 
 
-def find_downloaded_file(output_dir):
-    """Find the most recently created/modified audio file in output_dir."""
-    audio_exts = {".mp3", ".flac", ".m4a", ".opus", ".wav", ".vorbis", ".ogg", ".webm"}
+_AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".opus", ".wav", ".vorbis", ".ogg", ".webm"}
+
+
+def _list_audio_files(output_dir):
+    """Return a set of absolute path strings for audio files currently in output_dir.
+
+    Used to snapshot the directory *before* a download so that
+    find_downloaded_file can identify only the newly-created file(s)
+    afterward, ignoring pre-existing audio.
+    """
+    p = Path(output_dir)
+    if not p.exists():
+        return set()
+    return {str(f) for f in p.iterdir() if f.is_file() and f.suffix.lower() in _AUDIO_EXTS}
+
+
+def find_downloaded_file(output_dir, before=None):
+    """Find the most recently downloaded audio file in output_dir.
+
+    yt-dlp sets each file's mtime to the source upload date (not the download
+    time), so sorting by mtime can pick a pre-existing file whose upload date
+    is newer than the just-downloaded one — and metadata would then be written
+    to the wrong file. To avoid this, pass ``before``: a set of file paths
+    captured by _list_audio_files *before* the download; only files not in
+    that snapshot are considered. Recency falls back to ctime (creation/change
+    time), which better reflects the actual download time than mtime.
+    """
     output_path = Path(output_dir)
     if not output_path.exists():
         return None
-    files = [f for f in output_path.iterdir() if f.suffix.lower() in audio_exts]
+    files = [f for f in output_path.iterdir()
+             if f.is_file() and f.suffix.lower() in _AUDIO_EXTS]
+    if before:
+        files = [f for f in files if str(f) not in before]
     if not files:
         return None
-    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    files.sort(key=lambda f: f.stat().st_ctime, reverse=True)
     return str(files[0])
 
 
@@ -983,7 +1011,69 @@ def itunes_search(query, limit=5):
     return results
 
 
-def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbnail=True):
+# ─── Metadata scoring (shared by enhance_metadata, testable independently) ──
+
+
+def _score_metadata_candidate(r, artist, title, *, collaboration_aware=False, bonus_fields=False):
+    """Score a single metadata result (from MusicBrainz / NetEase / iTunes)
+    against a parsed artist/title pair.
+
+    - collaboration_aware: for NetEase, which returns comma-joined multi-artist
+      strings — reduces the exact-artist score and uses the raw (uncleaned)
+      artist for the contains check.
+    - bonus_fields: for iTunes, adds small bonuses for having cover art and
+      an album name.
+    """
+    r_artist_raw = r.get("artist") or ""
+    if collaboration_aware:
+        r_artist = _clean_artist(r_artist_raw)
+    else:
+        r_artist = r_artist_raw.strip()
+    r_title = (r.get("title") or "").strip()
+    is_collab = collaboration_aware and ("," in r_artist_raw or "，" in r_artist_raw)
+
+    score = 0
+    if _norm_cn(r_artist) == _norm_cn(artist):
+        score += 5 if is_collab else 20
+    elif collaboration_aware:
+        # NetEase path: match against the raw (comma-joined) artist string,
+        # exactly as the original _score_ne did — never the +8 branch.
+        if _norm_cn(artist) in _norm_cn(r_artist_raw):
+            score += 3
+    elif _norm_cn(artist) in _norm_cn(r_artist):
+        score += 8
+
+    if _norm_cn(r_title) == _norm_cn(title):
+        score += 5
+    elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
+        score += 2
+
+    if bonus_fields:
+        cover = r.get("cover") or r.get("pic_url")
+        if cover:
+            score += 3  # has cover art
+        if r.get("album"):
+            score += 2  # has album name
+    return score
+
+
+def _best_metadata_candidate(results, artist, title, **kwargs):
+    """Return ``(best_score, best_data)`` across a list of metadata results
+    using ``_score_metadata_candidate``.  Returns ``(-1, None)`` when the
+    list is empty.
+
+    Extra keyword arguments are forwarded to ``_score_metadata_candidate``
+    so callers can enable ``collaboration_aware`` or ``bonus_fields``.
+    """
+    best_score, best_data = -1, None
+    for r in results:
+        score = _score_metadata_candidate(r, artist, title, **kwargs)
+        if score > best_score:
+            best_score, best_data = score, r
+    return best_score, best_data
+
+
+def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbnail=True, filepath=None, before_snapshot=None):
     """
     Post-download metadata enhancement (multi-source strategy).
 
@@ -994,10 +1084,20 @@ def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbna
     When ``embed_thumbnail`` is False, cover art is neither downloaded nor
     embedded (respects --no-thumbnail).
     Never raises — metadata enhancement is best-effort.
+
+    If ``filepath`` is provided, it is used directly; otherwise the most
+    recently created audio file in ``output_dir`` is enhanced. Pass
+    ``before_snapshot`` (from _list_audio_files, captured before the
+    download) so the newly-downloaded file is identified correctly even
+    when the output dir already holds older audio.
     """
-    filepath = find_downloaded_file(output_dir)
+    if filepath is None:
+        filepath = find_downloaded_file(output_dir, before=before_snapshot)
     if not filepath:
         print("  [!] Could not find downloaded file for metadata")
+        return
+    if not os.path.isfile(filepath):
+        print(f"  [!] File not found: {filepath}")
         return
 
     print(f"\n[3/3] Enhancing metadata...")
@@ -1019,56 +1119,6 @@ def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbna
     # MusicBrainz + NetEase + iTunes run in parallel to cut wait time.
     print(f"  Looking up album info (MusicBrainz + NetEase + iTunes in parallel)...")
 
-    def _score_candidate(r, artist, title, *, collaboration_aware=False, bonus_fields=False):
-        """Score a single metadata result against the parsed artist/title.
-
-        - collaboration_aware: for NetEase, which returns comma-joined multi-artist
-          strings — reduces the exact-artist score and uses the raw (uncleaned)
-          artist for the contains check.
-        - bonus_fields: for iTunes, adds small bonuses for having cover art and
-          an album name.
-        """
-        r_artist_raw = r.get("artist", "")
-        if collaboration_aware:
-            r_artist = _clean_artist(r_artist_raw)
-        else:
-            r_artist = r_artist_raw.strip()
-        r_title = r.get("title", "").strip()
-        is_collab = collaboration_aware and ("," in r_artist_raw or "，" in r_artist_raw)
-
-        score = 0
-        if _norm_cn(r_artist) == _norm_cn(artist):
-            score += 5 if is_collab else 20
-        elif collaboration_aware:
-            # NetEase path: match against the raw (comma-joined) artist string,
-            # exactly as the original _score_ne did — never the +8 branch.
-            if _norm_cn(artist) in _norm_cn(r_artist_raw):
-                score += 3
-        elif _norm_cn(artist) in _norm_cn(r_artist):
-            score += 8
-
-        if _norm_cn(r_title) == _norm_cn(title):
-            score += 5
-        elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
-            score += 2
-
-        if bonus_fields:
-            cover = r.get("cover") or r.get("pic_url")
-            if cover:
-                score += 3  # has cover art
-            if r.get("album"):
-                score += 2  # has album name
-        return score
-
-    def _best(results, **kwargs):
-        """Return (best_score, best_data) across a list of results."""
-        best_score, best_data = -1, None
-        for r in results:
-            score = _score_candidate(r, artist, title, **kwargs)
-            if score > best_score:
-                best_score, best_data = score, r
-        return best_score, best_data
-
     # Fire all three queries concurrently; each returns its raw results.
     with ThreadPoolExecutor(max_workers=3) as pool:
         fut_mb = pool.submit(musicbrainz_lookup, search_query, python=python, limit=5)
@@ -1089,9 +1139,9 @@ def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbna
             it_results = []
 
     # Score each source's results (pure CPU, microseconds — no need to parallelize).
-    best_mb_score, mb_data = _best(mb_results)
-    best_ne_score, ne_data = _best(ne_results, collaboration_aware=True)
-    best_it_score, it_data = _best(it_results, bonus_fields=True)
+    best_mb_score, mb_data = _best_metadata_candidate(mb_results, artist, title)
+    best_ne_score, ne_data = _best_metadata_candidate(ne_results, artist, title, collaboration_aware=True)
+    best_it_score, it_data = _best_metadata_candidate(it_results, artist, title, bonus_fields=True)
 
     if mb_data:
         print(f"    Best: {mb_data['artist']} - {mb_data['title']} [MusicBrainz (score={best_mb_score})]")
@@ -1692,6 +1742,49 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
             print("No results. Add --proxy if YouTube is blocked in your region.")
 
 
+def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False):
+    """Update metadata for an existing audio file.
+
+    Uses the same multi-source lookup (MusicBrainz + NetEase + iTunes) as the
+    download path. If ``query`` is omitted, the function tries to derive an
+    artist/title query from the filename (e.g. "Artist - Title.mp3").
+    """
+    py, _, _ = ensure_deps()
+    if not py:
+        print("ERROR: No Python with yt-dlp found. Run 'setup' first:")
+        print("  python scripts/music_helper.py setup")
+        sys.exit(1)
+
+    if not os.path.isfile(filepath):
+        print(f"ERROR: File not found: {filepath}")
+        sys.exit(1)
+
+    if not query:
+        query = derive_query_from_filename(filepath)
+
+    output_dir = os.path.dirname(filepath) or "."
+    print("=" * 60)
+    print("  MelodyMine — Update metadata for existing file")
+    print("=" * 60)
+    print(f"  File     : {filepath}")
+    print(f"  Query    : {query}")
+    print(f"  Thumbnail: {'embed' if embed_thumbnail else 'skip'}")
+    print()
+
+    enhance_metadata(py, query, "", output_dir, embed_thumbnail=embed_thumbnail, filepath=filepath)
+
+    print("\n[OK] Metadata update complete!")
+    result = {
+        "ok": True,
+        "operation": "meta",
+        "file": filepath,
+        "query": query,
+    }
+    if json_output:
+        _emit_json(result)
+    return result
+
+
 def cmd_download(
     query, platform="auto", fmt="flac", output=None,
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
@@ -1745,10 +1838,11 @@ def cmd_download(
         if not output:
             output = DEFAULT_OUTPUT
         if song_id and resolved:
+            before = _list_audio_files(output)
             ok = _netease_direct_download(song_id, resolved, output, fmt, bitrate, py)
             if ok:
                 if not no_metadata:
-                    enhance_metadata(py, resolved, "", output, embed_thumbnail=embed_thumbnail)
+                    enhance_metadata(py, resolved, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
                 print(f"\n[OK] Download complete (via NetEase direct)!")
                 print(f"     Files saved to: {output}")
                 return {
@@ -1775,6 +1869,8 @@ def cmd_download(
     if not output:
         output = DEFAULT_OUTPUT
     os.makedirs(output, exist_ok=True)
+    # Snapshot existing audio so enhance_metadata can target only the new file.
+    before = _list_audio_files(output)
 
     # ── Bilibili: wbi search + yt-dlp download ──
     if platform == "bilibili":
@@ -1794,7 +1890,7 @@ def cmd_download(
             print("  Falling back to YouTube...")
             return _do_youtube_download(
                 py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-                no_metadata=no_metadata, cookies=cookies,
+                no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
             )
 
         # Reorder so vocal versions rank above accompaniment/instrumental ones.
@@ -1824,7 +1920,7 @@ def cmd_download(
         )
         if ok:
             if not no_metadata:
-                enhance_metadata(py, query, item["title"], output, embed_thumbnail=embed_thumbnail)
+                enhance_metadata(py, query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
             print(f"\n[OK] Download complete!")
             print(f"     Files saved to: {output}")
             return {
@@ -1849,7 +1945,7 @@ def cmd_download(
         )
         if ok_api:
             if not no_metadata:
-                enhance_metadata(py, query, item["title"], output, embed_thumbnail=embed_thumbnail)
+                enhance_metadata(py, query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
             print(f"\n[OK] Download complete (via Bilibili API direct)!")
             print(f"     Files saved to: {output}")
             return {
@@ -1863,20 +1959,20 @@ def cmd_download(
         print(f"\n  Bilibili all tiers failed. Falling back to YouTube...")
         return _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-            no_metadata=no_metadata, cookies=cookies,
+            no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
 
     # ── YouTube ──
     else:
         return _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-            no_metadata=no_metadata, cookies=cookies,
+            no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
 
 
 def _do_youtube_download(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-    no_metadata=False, cookies=None,
+    no_metadata=False, cookies=None, before_snapshot=None,
 ):
     """Download from YouTube via yt-dlp search + download.
     Proxy is optional — users outside China don't need it.
@@ -1896,6 +1992,11 @@ def _do_youtube_download(
     print("=" * 60)
     print()
 
+    # Snapshot existing audio if the caller didn't, so enhance_metadata targets
+    # only the new file (yt-dlp mtime = upload date, not download time).
+    if before_snapshot is None:
+        before_snapshot = _list_audio_files(output)
+
     # Resolve auto format by probing the source codec (metadata only, no download).
     if fmt == "auto":
         codec = _probe_ytdlp_codec(py, search_query, index=index, proxy=proxy, cookies=cookies)
@@ -1908,7 +2009,7 @@ def _do_youtube_download(
     )
     if ok:
         if not no_metadata:
-            enhance_metadata(py, query, "", output, embed_thumbnail=embed_thumbnail)
+            enhance_metadata(py, query, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
         print(f"\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
@@ -1944,7 +2045,7 @@ def _do_youtube_download(
 
 def _download_direct(
     py, url, fmt, output, proxy, bitrate,
-    index, embed_thumbnail, no_metadata, cookies,
+    index, embed_thumbnail, no_metadata, cookies, before_snapshot=None,
 ):
     """Download a direct URL (YouTube/SoundCloud/Bandcamp) via yt-dlp.
 
@@ -1962,6 +2063,9 @@ def _download_direct(
     if not output:
         output = DEFAULT_OUTPUT
     os.makedirs(output, exist_ok=True)
+    # Snapshot existing audio so enhance_metadata targets only the new file.
+    if before_snapshot is None:
+        before_snapshot = _list_audio_files(output)
 
     print("=" * 60)
     print(f"  Source   : {source} (direct URL)")
@@ -1987,7 +2091,7 @@ def _download_direct(
     )
     if ok:
         if not no_metadata:
-            enhance_metadata(py, url, "", output, embed_thumbnail=embed_thumbnail)
+            enhance_metadata(py, url, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
         print(f"\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
@@ -2172,6 +2276,8 @@ Examples:
   download "周杰伦 稻香" --index 2           Download 2nd search result
   download "周杰伦 稻香" --dry-run           Preview the command without executing
   download "周杰伦 稻香" --dry-run --json    Machine-readable plan for agents
+  meta "D:\\Music\\song.mp3"               Update metadata for an existing file
+  meta "D:\\Music\\song.mp3" --query "Artist Song"  Specify lookup query
         """,
     )
     sub = parser.add_subparsers(dest="operation")
@@ -2184,6 +2290,15 @@ Examples:
     p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube"])
     p_search.add_argument("--limit", type=int, default=5)
     p_search.add_argument("--proxy", default=None)
+
+    p_meta = sub.add_parser("meta", help="Update metadata for an existing audio file")
+    p_meta.add_argument("filepath", help="Path to the audio file")
+    p_meta.add_argument("--query", default=None,
+                        help="Search query for metadata lookup (default: derive from filename)")
+    p_meta.add_argument("--no-thumbnail", action="store_true",
+                        help="Skip cover art embedding")
+    p_meta.add_argument("--json", action="store_true",
+                        help="Output machine-readable JSON after update")
 
     p_dl = sub.add_parser("download", help="Download a song")
     p_dl.add_argument("query", help="Song name, artist, Spotify URL, or search query")
@@ -2216,6 +2331,13 @@ Examples:
         sys.exit(0 if ok else 1)
     elif args.operation == "search":
         cmd_search(args.query, args.platform, args.limit, args.proxy)
+    elif args.operation == "meta":
+        cmd_meta(
+            args.filepath,
+            query=args.query,
+            embed_thumbnail=not args.no_thumbnail,
+            json_output=args.json,
+        )
     elif args.operation == "download":
         result = cmd_download(
             args.query,
