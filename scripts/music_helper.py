@@ -28,8 +28,6 @@ from pathlib import Path
 from melodymine_common import (
     BILI_UA,
     DEFAULT_OUTPUT,
-    PROXY_PLATFORMS,
-    SPOTIFY_RE,
     auto_select_platform,
     build_spotdl_proxy_args,
     check_module,
@@ -40,20 +38,22 @@ from melodymine_common import (
     find_ffmpeg,
     find_python,
     is_bandcamp_url,
-    is_chinese,
     is_direct_download_url,
     is_netease_url,
     is_soundcloud_url,
     is_spotify_url,
     is_youtube_url,
-    needs_proxy,
     pip_install,
     proxy_to_env,
-    run_python_script,
     run_streaming,
     sanitize_filename,
     set_debug,
 )
+
+import bili_client
+import netease_client
+import mbrainz_client
+import cover_client
 
 # ─── Dependencies ────────────────────────────────────────────────────────
 
@@ -283,278 +283,9 @@ def _print_plan(plan):
         print(f"Note     : {note}")
 
 
-# ─── Bilibili wbi Search (bypasses yt-dlp broken search) ─────────────────
-
-_BILI_SEARCH_SCRIPT = r"""
-import hashlib, time, json, re, sys
-from urllib.parse import quote
-import requests
-
-UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
-TABS = [46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13]
-
-def mixed_key(orig):
-    return "".join(orig[i] for i in TABS)[:32]
-
-def wbi_sign(params, ik, sk):
-    mk = mixed_key(ik + sk)
-    params["wts"] = int(time.time())
-    q = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in sorted(params.items()))
-    params["w_rid"] = hashlib.md5((q + mk).encode()).hexdigest()
-    return params
-
-query = sys.argv[1]
-limit = int(sys.argv[2]) if len(sys.argv) > 2 else 5
-
-s = requests.Session()
-s.headers.update({"User-Agent": UA, "Referer": "https://search.bilibili.com"})
-
-try:
-    nav = s.get("https://api.bilibili.com/x/web-interface/nav", timeout=10).json()
-    ik = nav["data"]["wbi_img"]["img_url"].rsplit("/", 1)[1].split(".")[0]
-    sk = nav["data"]["wbi_img"]["sub_url"].rsplit("/", 1)[1].split(".")[0]
-except Exception as e:
-    print(json.dumps({"error": f"wbi_key: {e}"}))
-    sys.exit(1)
-
-try:
-    params = wbi_sign({"keyword": query, "search_type": "video", "page": 1, "page_size": str(limit)}, ik, sk)
-    resp = s.get("https://api.bilibili.com/x/web-interface/search/type", params=params, timeout=10)
-    data = resp.json()
-    if data.get("code") != 0:
-        print(json.dumps({"error": data.get("message", "unknown")}))
-        sys.exit(1)
-    results = []
-    for item in data.get("data", {}).get("result", [])[:limit]:
-        title = re.sub(r"<[^>]+>", "", item.get("title", ""))
-        results.append({
-            "bvid": item.get("bvid", ""),
-            "aid": item.get("aid", 0),
-            "title": title,
-            "duration": item.get("duration", ""),
-            "play": item.get("play", 0),
-            "uploader": item.get("author", ""),
-        })
-    print(json.dumps(results, ensure_ascii=False))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-    sys.exit(1)
-"""
-
-
-def bili_search(query, limit=5, python=None):
-    """
-    Search Bilibili via official API with wbi signing.
-    Uses subprocess to ensure requests library is available.
-    Retries once after 2s delay if rate-limited.
-    Returns list of dicts: {bvid, aid, title, duration, play, uploader}
-    """
-    if python is None:
-        python, _ = _find_music_python()
-    if not python:
-        print("  [!] No Python with requests found")
-        return []
-
-    for attempt in range(2):  # max 2 attempts
-        if attempt > 0:
-            print("  [*] Retrying in 2s...")
-            time.sleep(2)
-
-        try:
-            result = run_python_script(python, _BILI_SEARCH_SCRIPT, [query, str(limit)], timeout=30)
-        except subprocess.TimeoutExpired:
-            if attempt == 0:
-                continue
-            print("  [!] Bilibili search timed out")
-            return []
-        except Exception as e:
-            if attempt == 0:
-                continue
-            print(f"  [!] Bilibili search error: {e}")
-            return []
-
-        # Check for errors
-        stdout = result.stdout.strip()
-        stderr = result.stderr.strip()
-
-        if result.returncode != 0:
-            err_msg = None
-            if stdout:
-                try:
-                    err_data = json.loads(stdout)
-                    if isinstance(err_data, dict) and "error" in err_data:
-                        err_msg = err_data["error"]
-                except json.JSONDecodeError:
-                    pass
-            if not err_msg and stderr:
-                err_msg = stderr[:200]
-            if not err_msg:
-                err_msg = f"exit code {result.returncode}"
-
-            if attempt == 0:
-                print(f"  [!] Bilibili search attempt 1 failed: {err_msg}")
-                continue  # retry
-            else:
-                print(f"  [!] Bilibili API: {err_msg}")
-                return []
-
-        try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError:
-            if attempt == 0:
-                print("  [!] Bilibili returned non-JSON (likely rate-limited)")
-                continue  # retry
-            print("  [!] Bilibili search returned invalid JSON")
-            return []
-
-        if isinstance(data, dict) and "error" in data:
-            if attempt == 0:
-                print(f"  [!] Bilibili API: {data['error']}")
-                continue  # retry
-            print(f"  [!] Bilibili API: {data['error']}")
-            return []
-
-        return data if isinstance(data, list) else []
-
-    return []
-
-
 # ─── Metadata Enhancement (NetEase Music API + Title Parsing) ────────────
 
-_NETEASE_SEARCH_SCRIPT = r"""
-import json, sys, requests
-
-query = sys.argv[1]
-limit = int(sys.argv[2]) if len(sys.argv) > 2 else 3
-
-s = requests.Session()
-s.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://music.163.com",
-})
-
-try:
-    resp = s.post(
-        "https://music.163.com/api/search/get",
-        data={"s": query, "type": 1, "limit": limit, "offset": 0},
-        timeout=10,
-    )
-    data = resp.json()
-    if data.get("code") != 200:
-        print(json.dumps({"error": data.get("message", "unknown")}))
-        sys.exit(1)
-    songs = data.get("result", {}).get("songs", [])
-    results = []
-    for song in songs:
-        artists = ", ".join(a["name"] for a in song.get("artists", []))
-        album = song.get("album", {})
-        results.append({
-            "title": song.get("name", ""),
-            "artist": artists,
-            "album": album.get("name", ""),
-            "duration": song.get("duration", 0),
-            "pic_url": album.get("picUrl", ""),
-        })
-    print(json.dumps(results, ensure_ascii=False))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-    sys.exit(1)
-"""
-
-
 # ─── MusicBrainz Metadata Lookup (free, no auth, excellent for English songs) ─────
-
-_MB_SEARCH_SCRIPT = r"""
-import json, sys, urllib.request, urllib.parse, time
-
-query = sys.argv[1]
-limit = int(sys.argv[2]) if len(sys.argv) > 2 else 3
-
-UA = "MelodyMine/1.0 (music-downloader; +https://github.com/thintsing/MelodyMine)"
-time.sleep(0.5)
-
-mb_query = urllib.parse.quote(query)
-mb_url = f"https://musicbrainz.org/ws/2/recording/?query={mb_query}&limit={limit}&fmt=json"
-
-req = urllib.request.Request(mb_url)
-req.add_header("User-Agent", UA)
-try:
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-    sys.exit(1)
-
-results = []
-for rec in data.get("recordings", []):
-    title = rec.get("title", "")
-    ac = rec.get("artist-credit", [])
-    artist = ac[0]["name"] if ac else ""
-    releases = rec.get("releases", [])
-    album = releases[0]["title"] if releases else ""
-    release_mbid = releases[0]["id"] if releases else ""
-    duration_ms = rec.get("length", 0)
-    pic_url = ""
-    if release_mbid:
-        time.sleep(0.3)
-        try:
-            ca_req = urllib.request.Request(
-                f"https://coverartarchive.org/release/{release_mbid}/front-500"
-            )
-            ca_req.add_header("User-Agent", UA)
-            with urllib.request.urlopen(ca_req, timeout=10) as ca_resp:
-                if ca_resp.status == 200:
-                    pic_url = ca_resp.url
-        except Exception:
-            try:
-                ca_req2 = urllib.request.Request(
-                    f"https://coverartarchive.org/release/{release_mbid}/front"
-                )
-                ca_req2.add_header("User-Agent", UA)
-                with urllib.request.urlopen(ca_req2, timeout=10) as ca_resp2:
-                    if ca_resp2.status == 200:
-                        pic_url = ca_resp2.url
-            except Exception:
-                pass
-    if title and artist:
-        results.append({
-            "title": title, "artist": artist, "album": album,
-            "duration": duration_ms, "pic_url": pic_url,
-        })
-print(json.dumps(results, ensure_ascii=False))
-"""
-
-
-def musicbrainz_lookup(query, python=None, limit=5):
-    """
-    Search MusicBrainz for song metadata (artist, album, cover art).
-    Free, no API key, no authentication needed.
-    Returns list of dicts: {title, artist, album, duration, pic_url}
-    """
-    if python is None:
-        python, _ = _find_music_python()
-    if not python:
-        return []
-    parts = query.strip().split(None, 1)
-    if len(parts) >= 2:
-        mb_query = f'artist:"{parts[0]}" AND recording:"{parts[1]}" AND NOT (cover OR remix OR karaoke OR live OR tribute OR instrumental OR edit)'
-    else:
-        mb_query = f'recording:"{parts[0]}" AND NOT (cover OR remix OR karaoke OR live OR tribute)'
-    try:
-        result = run_python_script(python, _MB_SEARCH_SCRIPT, [mb_query, str(limit)], timeout=30)
-    except Exception:
-        return []
-    stdout = result.stdout.strip()
-    if not stdout:
-        return []
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        return []
-    if isinstance(data, dict) and "error" in data:
-        return []
-    return data if isinstance(data, list) else []
-
 
 # Chinese text normalization for robust artist/title comparison
 _CHINESE_NORM_MAP = str.maketrans({
@@ -614,93 +345,7 @@ def parse_search_query(query):
         return artist, title
     return None, query.strip()
 
-_COVER_DOWNLOAD_SCRIPT = r"""
-import sys, requests, tempfile, os
-url = sys.argv[1]
-try:
-    resp = requests.get(url, timeout=10)
-    if resp.status_code == 200:
-        ext = ".jpg"
-        ct = resp.headers.get("content-type", "")
-        if "png" in ct:
-            ext = ".png"
-        tmp = os.path.join(tempfile.gettempdir(), "cover_" + str(os.getpid()) + ext)
-        with open(tmp, "wb") as f:
-            f.write(resp.content)
-        print(tmp)
-    else:
-        print("")
-except:
-    print("")
-"""
-
-
-def metadata_lookup(query, python=None, limit=3):
-    """
-    Search NetEase Music API for song metadata.
-    Returns list of dicts: {title, artist, album, duration, pic_url}
-    or empty list on failure.
-    """
-    if python is None:
-        python, _ = _find_music_python()
-    if not python:
-        return []
-
-    try:
-        result = run_python_script(python, _NETEASE_SEARCH_SCRIPT, [query, str(limit)], timeout=15)
-    except Exception:
-        return []
-
-    stdout = result.stdout.strip()
-    if not stdout:
-        return []
-
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        return []
-
-    if isinstance(data, dict) and "error" in data:
-        return []
-
-    return data if isinstance(data, list) else []
-
-
-# ─── NetEase URL resolution (song id → artist + title) ───────────────────
-
-_NETEASE_DETAIL_SCRIPT = r"""
-import json, sys, requests
-
-song_id = sys.argv[1]
-s = requests.Session()
-s.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Referer": "https://music.163.com",
-})
-try:
-    resp = s.post(
-        "https://music.163.com/api/song/detail/",
-        data={"ids": "[" + song_id + "]", "limit": 1, "offset": 0},
-        timeout=10,
-    )
-    data = resp.json()
-    if data.get("code") != 200 or not data.get("songs"):
-        print(json.dumps({"error": "song not found"}))
-        sys.exit(1)
-    song = data["songs"][0]
-    artists = ", ".join(a["name"] for a in song.get("artists", []))
-    print(json.dumps({
-        "title": song.get("name", ""),
-        "artist": artists,
-        "album": song.get("album", {}).get("name", ""),
-    }, ensure_ascii=False))
-except Exception as e:
-    print(json.dumps({"error": str(e)}))
-    sys.exit(1)
-"""
-
-
-def resolve_netease_url(url, python=None):
+def resolve_netease_url(url):
     """Resolve a NetEase song URL to an 'Artist Title' search query.
 
     Returns a query string (e.g. "周杰伦 稻香") or None on failure.
@@ -708,26 +353,9 @@ def resolve_netease_url(url, python=None):
     song_id = extract_netease_song_id(url)
     if not song_id:
         return None
-    if python is None:
-        python, _ = _find_music_python()
-    if not python:
+    data = netease_client.detail(song_id)
+    if not data:
         return None
-
-    try:
-        result = run_python_script(python, _NETEASE_DETAIL_SCRIPT, [song_id], timeout=15)
-    except Exception:
-        return None
-
-    stdout = result.stdout.strip()
-    if not stdout:
-        return None
-    try:
-        data = json.loads(stdout)
-    except json.JSONDecodeError:
-        return None
-    if isinstance(data, dict) and "error" in data:
-        return None
-
     artist = _clean_artist(data.get("artist", ""))
     title = data.get("title", "").strip()
     if artist and title:
@@ -866,24 +494,6 @@ def find_downloaded_file(output_dir, before=None):
         return None
     files.sort(key=lambda f: f.stat().st_ctime, reverse=True)
     return str(files[0])
-
-
-def download_cover(url, python=None):
-    """Download a cover image from URL. Returns local path or None."""
-    if not url:
-        return None
-    if python is None:
-        python, _ = _find_music_python()
-    if not python:
-        return None
-    try:
-        result = run_python_script(python, _COVER_DOWNLOAD_SCRIPT, [url], timeout=15)
-        path = result.stdout.strip()
-        if path and os.path.isfile(path):
-            return path
-    except Exception:
-        pass
-    return None
 
 
 def set_metadata(filepath, title=None, artist=None, album=None, cover_path=None):
@@ -1047,7 +657,7 @@ def _best_metadata_candidate(results, artist, title, **kwargs):
     return best_score, best_data
 
 
-def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbnail=True, filepath=None, before_snapshot=None):
+def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True, filepath=None, before_snapshot=None):
     """
     Post-download metadata enhancement (multi-source strategy).
 
@@ -1095,9 +705,9 @@ def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbna
 
     # Fire all three queries concurrently; each returns its raw results.
     with ThreadPoolExecutor(max_workers=3) as pool:
-        fut_mb = pool.submit(musicbrainz_lookup, search_query, python=python, limit=5)
-        fut_ne = pool.submit(metadata_lookup, search_query, python=python, limit=10)
-        fut_it = pool.submit(itunes_search, search_query, limit=10)
+        fut_mb = pool.submit(mbrainz_client.lookup, search_query, 5)
+        fut_ne = pool.submit(netease_client.search, search_query, 10)
+        fut_it = pool.submit(itunes_search, search_query, 10)
         # Wait for all; exceptions in a source just mean empty results for it.
         try:
             mb_results = fut_mb.result() or []
@@ -1172,7 +782,7 @@ def enhance_metadata(python, search_query, bili_title, output_dir, embed_thumbna
     # ── Download album cover ──
     cover_path = None
     if embed_thumbnail and pic_url:
-        cover_path = download_cover(pic_url, python)
+        cover_path = cover_client.download(pic_url)
         if cover_path:
             print(f"  Downloaded album cover")
     elif not embed_thumbnail:
@@ -1745,7 +1355,7 @@ def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False):
     print(f"  Thumbnail: {'embed' if embed_thumbnail else 'skip'}")
     print()
 
-    enhance_metadata(py, query, "", output_dir, embed_thumbnail=embed_thumbnail, filepath=filepath)
+    enhance_metadata(query, "", output_dir, embed_thumbnail=embed_thumbnail, filepath=filepath)
 
     print("\n[OK] Metadata update complete!")
     result = {
@@ -1816,7 +1426,7 @@ def cmd_download(
             ok = _netease_direct_download(song_id, resolved, output, fmt, bitrate, py)
             if ok:
                 if not no_metadata:
-                    enhance_metadata(py, resolved, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+                    enhance_metadata(resolved, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
                 print(f"\n[OK] Download complete (via NetEase direct)!")
                 print(f"     Files saved to: {output}")
                 return {
@@ -1894,7 +1504,7 @@ def cmd_download(
         )
         if ok:
             if not no_metadata:
-                enhance_metadata(py, query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+                enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
             print(f"\n[OK] Download complete!")
             print(f"     Files saved to: {output}")
             return {
@@ -1919,7 +1529,7 @@ def cmd_download(
         )
         if ok_api:
             if not no_metadata:
-                enhance_metadata(py, query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+                enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
             print(f"\n[OK] Download complete (via Bilibili API direct)!")
             print(f"     Files saved to: {output}")
             return {
@@ -1983,7 +1593,7 @@ def _do_youtube_download(
     )
     if ok:
         if not no_metadata:
-            enhance_metadata(py, query, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
+            enhance_metadata(query, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
         print(f"\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
@@ -2065,7 +1675,7 @@ def _download_direct(
     )
     if ok:
         if not no_metadata:
-            enhance_metadata(py, url, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
+            enhance_metadata(url, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
         print(f"\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {

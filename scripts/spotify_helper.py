@@ -415,7 +415,7 @@ def main():
         print(f"  File  : {filepath}")
         print(f"  Query : {query}")
         print()
-        enhance_metadata(python, query, "", output_dir, embed_thumbnail=True, filepath=filepath)
+        enhance_metadata(query, "", output_dir, embed_thumbnail=True, filepath=filepath)
         print("\n[OK] Metadata update complete!")
         return
 
