@@ -127,11 +127,25 @@ Use cookies when YouTube reports bot/sign-in checks:
 python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookies.txt"
 ```
 
+Force Soulseek (P2P) for hard-to-find songs or lossless FLAC:
+
+```bash
+python scripts/music_helper.py download "Air Supply Complete" --platform soulseek
+```
+
+Search Soulseek network only (no download):
+
+```bash
+python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
+```
+
+> **Note**: Soulseek requires credentials. Set `SLSK_USERNAME` and `SLSK_PASSWORD` environment variables, or pass `--slsk-user USER --slsk-pass PASS`. Search returns results from all users; download auto-selects the best FLAC from a user with free slots.
+
 ## Options
 
 `music_helper.py download` supports:
 
-- `--platform {auto,bilibili,youtube}`: default `auto`.
+- `--platform {auto,bilibili,youtube,ytmusic,soulseek}`: default `auto`.
 - `--format {auto,mp3,flac,m4a,opus,wav,vorbis}`: default `auto`. `auto` probes the source codec: flac if lossless (flac/alac/wav/pcm), else mp3 320K — no fake-lossless upcast.
 - `--output PATH`: default platform music folder.
 - `--proxy URL`: for YouTube or Spotify download networking.
@@ -143,6 +157,8 @@ python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookie
 - `--dry-run`: print the command that would run without executing.
 - `--json`: output machine-readable JSON (use with `--dry-run` or after a successful download).
 - `--debug`: write a session log to `~/.melodymine/last_run.log` for troubleshooting.
+- `--slsk-user USER`: Soulseek username (or set `SLSK_USERNAME` env var).
+- `--slsk-pass PASS`: Soulseek password (or set `SLSK_PASSWORD` env var).
 
 `music_helper.py meta "filepath"` supports:
 
@@ -159,6 +175,7 @@ python scripts/music_helper.py download "Artist Song" --cookies "/path/to/cookie
 | Spotify URL | spotDL through `music_helper.py` | May need proxy in restricted regions. For playlist sync use `spotify_helper.py`. |
 | NetEase URL (`music.163.com/song?id=xxx`) | NetEase direct → Bilibili/YouTube | Resolves song name via NetEase API, tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube if copyrighted. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct download | No search step — yt-dlp downloads the URL directly. YouTube may need proxy/cookies. |
+| Force Soulseek (`--platform soulseek`) | Soulseek P2P network | ⚠️ Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads the best FLAC from the first user with free slots. No proxy needed. |
 
 ## Error Handling
 
@@ -171,6 +188,8 @@ Execute the first matching row. Do not explain the table to the user — just ru
 | YouTube `Sign in to confirm you're not a bot` | Ask the user to export cookies.txt (e.g. via "Get cookies.txt" browser extension for YouTube), then retry: `download "<query>" --cookies /path/cookies.txt`. |
 | Spotify `KeyError: 'uri'` | Extract the track name from the Spotify URL or ask the user for it, then download by name instead: `download "Artist Song"`. Do not retry the same Spotify URL. |
 | `No results` on any platform | Try: (1) `Artist Title` format, (2) force the other platform via `--platform`, (3) broaden the query. Try up to 2 variants before reporting failure to the user. |
+| Soulseek `no results` | Ensure `SLSK_USERNAME` and `SLSK_PASSWORD` are set. Try a broader query with fewer words. |
+| Soulseek `download failed` / timeout | The remote user may be offline or have a full queue. Retry the same command — Soulseek picks a different result. |
 | Download succeeds but `metadata is wrong` | Retry once with `--no-metadata` to at least fix the filename, then offer the user a manual retry with a more exact `Artist Song` query. For already-downloaded files, use `python scripts/music_helper.py meta "/path/to/song.mp3" --query "Artist Song"`. |
 | `spotdl` not installed / install failed | Fall back to searching the song name via `download "Artist Song"` (Bilibili/YouTube path). Do not block on spotDL. |
 

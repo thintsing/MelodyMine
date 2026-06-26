@@ -54,6 +54,7 @@ import bili_client
 import cover_client
 import mbrainz_client
 import netease_client
+import soulseek_client
 import ytmusic_client
 
 # ─── Dependencies ────────────────────────────────────────────────────────
@@ -1303,6 +1304,26 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
         else:
             print("No results (ytmusicapi returned empty).")
             print("Tip: Try --platform youtube or --proxy socks5://host:port")
+    elif platform == "soulseek":
+        print(f"Searching Soulseek for: {query}")
+        print("=" * 60)
+        results = soulseek_client.search(query, wait=15, max_results=limit * 10)
+        if results:
+            # Group by user
+            from collections import Counter
+            user_count = Counter(r["username"] for r in results)
+            print(f"Found {len(results)} files from {len(user_count)} users:\n")
+            displayed = set()
+            for r in results[:limit]:
+                name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+                size_mb = r["filesize"] / 1024 / 1024
+                slot_flag = "[FREE]" if r["has_free_slots"] else "[QUEUE]"
+                print(f"  {name}")
+                print(f"     User: {r['username']:20s} | {size_mb:.1f}MB | {r['extension']} {slot_flag}")
+                print()
+        else:
+            print("No Soulseek results.")
+            print("Make sure SLSK_USERNAME and SLSK_PASSWORD are set.")
     else:
         # YouTube search via yt-dlp
         search_query = f"ytsearch:{query}"
@@ -1388,7 +1409,7 @@ def cmd_download(
     query, platform="auto", fmt="flac", output=None,
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
     no_metadata=False, cookies=None, dry_run=False, json_output=False,
-    debug=False,
+    debug=False, slsk_user=None, slsk_pass=None,
 ):
     """Download a song with automatic platform selection and fallback."""
     if debug:
@@ -1568,6 +1589,13 @@ def cmd_download(
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
 
+    # ── Soulseek ──
+    if platform == "soulseek":
+        return _do_soulseek_download(
+            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+            slsk_user=slsk_user, slsk_pass=slsk_pass,
+        )
+
     # ── YouTube ──
     else:
         return _do_youtube_download(
@@ -1575,6 +1603,72 @@ def cmd_download(
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
 
+
+
+
+def _do_soulseek_download(
+    query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+    slsk_user=None, slsk_pass=None,
+):
+    """Download from Soulseek P2P network."""
+    if not output:
+        output = DEFAULT_OUTPUT
+    os.makedirs(output, exist_ok=True)
+
+    print("=" * 60)
+    print(f"  Platform : Soulseek (P2P)")
+    print(f"  Query    : {query}")
+    print(f"  Format   : {fmt}")
+    print(f"  Output   : {output}")
+    print("=" * 60)
+    print()
+
+    print("[1/3] Searching Soulseek network...")
+    results = soulseek_client.search(
+        query, username=slsk_user, password=slsk_pass, wait=15)
+
+    if not results:
+        print("  No results found on Soulseek.")
+        return {"ok": False, "platform": "soulseek", "error": "no results"}
+
+    flac = [r for r in results if r["extension"] == "flac"]
+    print(f"  Found {len(results)} files ({len(flac)} FLAC)")
+    print()
+    print("  Top FLAC:")
+    for r in flac[:10]:
+        name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        sz = r["filesize"] / 1024 / 1024
+        print(f"    {r['username']:20s} | {sz:5.1f}MB | {name[:50]}")
+    print()
+
+    chosen = next(
+        (r for r in flac if r["has_free_slots"]),
+        flac[0] if flac else None)
+    if not chosen:
+        print("  No suitable file found.")
+        return {"ok": False, "platform": "soulseek", "error": "no file"}
+
+    name = chosen["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+    sz = chosen["filesize"] / 1024 / 1024
+    print(f"[2/3] Selected: {chosen['username']}: {name} ({sz:.1f}MB)")
+    print("[3/3] Downloading...")
+    ok, path = soulseek_client.download(
+        chosen["username"], chosen["filename"], output,
+        username=slsk_user, password=slsk_pass)
+
+    if ok and path:
+        print(f"\n[OK] Download complete! -> {path}")
+        if not no_metadata:
+            enhance_metadata(
+                query, "", output,
+                embed_thumbnail=embed_thumbnail, filepath=path)
+        return {
+            "ok": True, "platform": "soulseek", "engine": "p2p",
+            "query": query, "format": fmt, "output": output,
+            "metadata": not no_metadata,
+        }
+    print("\n[FAIL] Soulseek download failed.")
+    return {"ok": False, "platform": "soulseek", "error": "download failed"}
 
 def _do_ytmusic_download(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
@@ -1970,7 +2064,7 @@ Examples:
 
     p_search = sub.add_parser("search", help="Search for songs (no download)")
     p_search.add_argument("query", help="Search query")
-    p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic"])
+    p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek"])
     p_search.add_argument("--limit", type=int, default=5)
     p_search.add_argument("--proxy", default=None)
 
@@ -1985,7 +2079,7 @@ Examples:
 
     p_dl = sub.add_parser("download", help="Download a song")
     p_dl.add_argument("query", help="Song name, artist, Spotify URL, or search query")
-    p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic"])
+    p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek"])
     p_dl.add_argument("--format", default="auto",
                       choices=["auto", "mp3", "flac", "m4a", "opus", "wav", "vorbis"],
                       help="Output format. 'auto' probes the source: flac if lossless, else mp3 320K")
@@ -2003,6 +2097,8 @@ Examples:
                       help="Output machine-readable JSON (use with --dry-run or after download)")
     p_dl.add_argument("--debug", action="store_true",
                       help="Write a session log to ~/.melodymine/last_run.log for troubleshooting")
+    p_dl.add_argument("--slsk-user", default=None, help="Soulseek username (or set SLSK_USERNAME env)")
+    p_dl.add_argument("--slsk-pass", default=None, help="Soulseek password (or set SLSK_PASSWORD env)")
 
     args = parser.parse_args()
 
@@ -2036,6 +2132,8 @@ Examples:
             dry_run=args.dry_run,
             json_output=args.json,
             debug=args.debug,
+            slsk_user=args.slsk_user,
+            slsk_pass=args.slsk_pass,
         )
         # Emit JSON for non-dry-run successful downloads (dry-run already emitted).
         if args.json and not args.dry_run and isinstance(result, dict):
