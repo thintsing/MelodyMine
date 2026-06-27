@@ -1014,7 +1014,7 @@ def _bili_api_download(bvid, output, fmt="flac", bitrate=None, python=None):
     if not python:
         return False
     import urllib.request
-    print("    ↳ yt-dlp blocked (412) — trying Bilibili API direct download...")
+    print("    -> yt-dlp blocked (412) - trying Bilibili API direct download...")
 
     # Step 1+2: Resolve audio stream URL + codec (shared with auto-format probe).
     audio_url, codec = _bili_resolve_audio(bvid, python=python)
