@@ -1610,7 +1610,7 @@ def _do_soulseek_download(
     query, output, fmt, bitrate, embed_thumbnail, no_metadata,
     slsk_user=None, slsk_pass=None,
 ):
-    """Download from Soulseek P2P network."""
+    """Download from Soulseek P2P network with multi-candidate retry."""
     if not output:
         output = DEFAULT_OUTPUT
     os.makedirs(output, exist_ok=True)
@@ -1624,37 +1624,47 @@ def _do_soulseek_download(
     print()
 
     print("[1/3] Searching Soulseek network...")
+    # Extended wait (20s) for more complete search results
     results = soulseek_client.search(
-        query, username=slsk_user, password=slsk_pass, wait=15)
+        query, username=slsk_user, password=slsk_pass, wait=20)
 
     if not results:
         print("  No results found on Soulseek.")
         return {"ok": False, "platform": "soulseek", "error": "no results"}
 
-    flac = [r for r in results if r["extension"] == "flac"]
-    print(f"  Found {len(results)} files ({len(flac)} FLAC)")
-    print()
-    print("  Top FLAC:")
-    for r in flac[:10]:
-        name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-        sz = r["filesize"] / 1024 / 1024
-        print(f"    {r['username']:20s} | {sz:5.1f}MB | {name[:50]}")
+    # Divide candidates by format and by free-slot status
+    flac_free = [r for r in results if r["extension"] == "flac" and r["has_free_slots"]]
+    flac_all  = [r for r in results if r["extension"] == "flac"]
+    mp3_free  = [r for r in results if r["extension"] in ("mp3",) and r["has_free_slots"]]
+    mp3_all   = [r for r in results if r["extension"] in ("mp3",)]
+    other     = [r for r in results if r["extension"] not in ("flac", "mp3")]
+
+    # Preference order: FLAC (free slots) > FLAC > MP3 (free slots) > MP3 > other
+    candidates = (flac_free or flac_all or mp3_free or mp3_all or other)
+
+    print(f"  Found {len(results)} files from {len(set(r['username'] for r in results))} users")
+    print(f"    FLAC(open): {len(flac_free):>3d}   FLAC(all): {len(flac_all):>3d}")
+    print(f"    MP3 (open): {len(mp3_free):>3d}   MP3 (all): {len(mp3_all):>3d}")
     print()
 
-    chosen = next(
-        (r for r in flac if r["has_free_slots"]),
-        flac[0] if flac else None)
-    if not chosen:
+    if not candidates:
         print("  No suitable file found.")
         return {"ok": False, "platform": "soulseek", "error": "no file"}
 
-    name = chosen["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-    sz = chosen["filesize"] / 1024 / 1024
-    print(f"[2/3] Selected: {chosen['username']}: {name} ({sz:.1f}MB)")
-    print("[3/3] Downloading...")
-    ok, path = soulseek_client.download(
-        chosen["username"], chosen["filename"], output,
-        username=slsk_user, password=slsk_pass)
+    # Show top candidates
+    print("  Top candidates:")
+    for r in candidates[:8]:
+        name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        sz = r["filesize"] / 1024 / 1024
+        fmt_char = {"flac": "F", "mp3": "M"}.get(r["extension"], "?")
+        slot = "*" if r["has_free_slots"] else "Q"
+        print(f"    [{fmt_char}{slot}] {r['username']:20s} | {sz:5.1f}MB | {name[:55]}")
+    print()
+
+    print("[2/3] Trying candidates (multi-retry enabled)...")
+    ok, path = soulseek_client.download_best(
+        candidates, output,
+        username=slsk_user, password=slsk_pass, max_retries=2)
 
     if ok and path:
         print(f"\n[OK] Download complete! -> {path}")

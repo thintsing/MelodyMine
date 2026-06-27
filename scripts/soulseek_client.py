@@ -236,6 +236,59 @@ def download(target_user, remote_path, output_dir, username=None, password=None,
         return False, None
 
 
+def download_best(candidates, output_dir, username=None, password=None, max_retries=3):
+    """
+    Try multiple Soulseek candidates in order until one succeeds.
+
+    ``candidates`` is a list of dicts with keys ``username`` and ``filename``,
+    as returned by ``search()``.  Each candidate is tried in sequence;
+    exponential backoff (1s, 2s, 4s) is applied between retries of the same
+    candidate.  Returns ``(True, local_path)`` on success or
+    ``(False, None)`` if all candidates fail.
+
+    Timeout scales by file size:
+      - < 20 MB: 120s
+      - 20-50 MB: 240s
+      - > 50 MB: 360s
+    """
+    import time as _time
+    username, password = _get_creds(username, password)
+    if not username:
+        return False, None
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    for idx, cand in enumerate(candidates):
+        target_user = cand["username"]
+        remote_path = cand["filename"]
+        filesize = cand.get("filesize", 0)
+        name = remote_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+
+        # Scale timeout by file size
+        if filesize > 50 * 1024 * 1024:
+            to = 360
+        elif filesize > 20 * 1024 * 1024:
+            to = 240
+        else:
+            to = 120
+
+        for attempt in range(max_retries):
+            print(f"  [{idx + 1}/{len(candidates)}] Trying {target_user}: {name} "
+                  f"(attempt {attempt + 1}/{max_retries})")
+            ok, path = download(
+                target_user, remote_path, output_dir,
+                username=username, password=password, timeout=to)
+            if ok and path:
+                return True, path
+            if attempt < max_retries - 1:
+                wait = 1 + attempt * 2  # 1s, 3s, 5s
+                print(f"    [-] Failed, retrying in {wait}s...")
+                _time.sleep(wait)
+
+    print(f"  [!] All {len(candidates)} candidates exhausted.")
+    return False, None
+
+
 if __name__ == "__main__":
     # CLI mode for quick testing
     if len(sys.argv) < 2:
