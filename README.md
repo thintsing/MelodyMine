@@ -147,7 +147,8 @@ Options:
 | Spotify URL | spotDL | Auto-installs spotDL on first use if possible. |
 | NetEase URL (`music.163.com`) | NetEase direct → Bilibili/YouTube | Song name extracted via NetEase API. Tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube if copyrighted. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct | No search step — downloads the URL directly. YouTube may need `--proxy`. |
-| Soulseek P2N (`--platform soulseek`) | Soulseek network | Searches direct from sharers. Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads best FLAC from first user with free slots. |
+| Soulseek P2N (`--platform soulseek`) | Soulseek network | Searches direct from sharers. Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads via single persistent session with multi-candidate retry. Auto-fallback after YouTube. Proxy auto-detected from Clash (SOCKS5) for server connection only; peer transfers direct.
+| Chinese query → YouTube fail → Soulseek | Auto-fallback | When Bilibili & YouTube both fail, Soulseek is tried automatically. |
 
 ## Advanced Spotify Operations
 

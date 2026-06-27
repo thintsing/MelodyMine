@@ -54,7 +54,7 @@ import bili_client
 import cover_client
 import mbrainz_client
 import netease_client
-import soulseek_client
+import soulseek_client_v2 as soulseek_client
 import ytmusic_client
 
 # ─── Dependencies ────────────────────────────────────────────────────────
@@ -1577,10 +1577,19 @@ def cmd_download(
 
         # Tier 3: YouTube fallback
         print(f"\n  Bilibili all tiers failed. Falling back to YouTube...")
-        return _do_youtube_download(
+        result = _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
+        if result.get("ok"):
+            return result
+
+        # Tier 4: Soulseek fallback
+        print(f"\n  YouTube also failed. Trying Soulseek as final fallback...")
+        return _do_soulseek_download(
+            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+            slsk_user=slsk_user, slsk_pass=slsk_pass,
+            proxy=proxy,)
 
     # ── YouTube Music (ytmusicapi search + yt-dlp download) ──
     if platform == "ytmusic":
@@ -1599,10 +1608,20 @@ def cmd_download(
 
     # ── YouTube ──
     else:
-        return _do_youtube_download(
+        result = _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
+        if result.get("ok"):
+            return result
+
+        # ── Auto-fallback: YouTube → Soulseek ──
+        print("\n  YouTube failed. Trying Soulseek as final fallback...")
+        return _do_soulseek_download(
+            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+            slsk_user=slsk_user, slsk_pass=slsk_pass,
+            proxy=proxy,)
+
 
 
 
@@ -1612,7 +1631,12 @@ def _do_soulseek_download(
     slsk_user=None, slsk_pass=None,
     proxy="",
 ):
-    """Download from Soulseek P2P network with multi-candidate retry."""
+    """Download from Soulseek P2P network.
+
+    Uses a single persistent session (search_and_download) to avoid
+    re-login overhead. Falls back to multi-candidate retry if the
+    combined call fails.
+    """
     if not output:
         output = DEFAULT_OUTPUT
     os.makedirs(output, exist_ok=True)
@@ -1625,53 +1649,16 @@ def _do_soulseek_download(
     print("=" * 60)
     print()
 
-    print("[1/3] Searching Soulseek network...")
-    # Extended wait (20s) for more complete search results
-    results = soulseek_client.search(
-        query, username=slsk_user, password=slsk_pass, wait=20,
-        proxy=proxy)
-
-    if not results:
-        print("  No results found on Soulseek.")
-        return {"ok": False, "platform": "soulseek", "error": "no results"}
-
-    # Divide candidates by format and by free-slot status
-    flac_free = [r for r in results if r["extension"] == "flac" and r["has_free_slots"]]
-    flac_all  = [r for r in results if r["extension"] == "flac"]
-    mp3_free  = [r for r in results if r["extension"] in ("mp3",) and r["has_free_slots"]]
-    mp3_all   = [r for r in results if r["extension"] in ("mp3",)]
-    other     = [r for r in results if r["extension"] not in ("flac", "mp3")]
-
-    # Preference order: FLAC (free slots) > FLAC > MP3 (free slots) > MP3 > other
-    candidates = (flac_free or flac_all or mp3_free or mp3_all or other)
-
-    print(f"  Found {len(results)} files from {len(set(r['username'] for r in results))} users")
-    print(f"    FLAC(open): {len(flac_free):>3d}   FLAC(all): {len(flac_all):>3d}")
-    print(f"    MP3 (open): {len(mp3_free):>3d}   MP3 (all): {len(mp3_all):>3d}")
-    print()
-
-    if not candidates:
-        print("  No suitable file found.")
-        return {"ok": False, "platform": "soulseek", "error": "no file"}
-
-    # Show top candidates (sanitize invisible Unicode control chars for GBK terminals)
-    print("  Top candidates:")
-    for r in candidates[:8]:
-        name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-        sz = r["filesize"] / 1024 / 1024
-        fmt_char = {"flac": "F", "mp3": "M"}.get(r["extension"], "?")
-        slot = "*" if r["has_free_slots"] else "Q"
-        safe_user = "".join(c for c in r["username"] if c.isprintable() or c == " ")[:20]
-        safe_name = "".join(c for c in name if c.isprintable() or c == " ")[:55]
-        print(f"    [{fmt_char}{slot}] {safe_user:20s} | {sz:5.1f}MB | {safe_name}")
-    print()
-
-    print("[2/3] Trying candidates (multi-retry enabled)...")
+    print("[1/2] Searching + downloading from Soulseek network...")
     if proxy:
         print(f"  Proxy: {proxy}")
-    ok, path = soulseek_client.download_best(
-        candidates, output,
-        username=slsk_user, password=slsk_pass, max_retries=2,
+
+    # Tier 1: search_and_download in one session (efficient)
+    debug_log("soulseek: tier 1 — search_and_download")
+    ok, path = soulseek_client.search_and_download(
+        query, output,
+        username=slsk_user, password=slsk_pass,
+        wait=20, timeout=600,
         proxy=proxy)
 
     if ok and path:
@@ -1685,6 +1672,46 @@ def _do_soulseek_download(
             "query": query, "format": fmt, "output": output,
             "metadata": not no_metadata,
         }
+
+    # Tier 2: Multi-candidate retry with timeout scaling
+    print("  search_and_download did not succeed. Trying multi-candidate mode...")
+    debug_log("soulseek: tier 2 — search + download_best")
+
+    results = soulseek_client.search(
+        query, username=slsk_user, password=slsk_pass, wait=20,
+        proxy=proxy)
+
+    if not results:
+        print("  No Soulseek results.")
+        return {"ok": False, "platform": "soulseek", "error": "no results"}
+
+    # Divide candidates by format and free-slot status
+    flac_free = [r for r in results if r["extension"] == "flac" and r["has_free_slots"]]
+    flac_all  = [r for r in results if r["extension"] == "flac"]
+    mp3_free  = [r for r in results if r["extension"] in ("mp3",) and r["has_free_slots"]]
+    mp3_all   = [r for r in results if r["extension"] in ("mp3",)]
+    other     = [r for r in results if r["extension"] not in ("flac", "mp3")]
+
+    candidates = (flac_free or flac_all or mp3_free or mp3_all or other)
+
+    print(f"  Found {len(results)} files, trying download...")
+    if candidates:
+        ok, path = soulseek_client.download_best(
+            candidates, output,
+            username=slsk_user, password=slsk_pass, max_retries=2,
+            proxy=proxy)
+
+        if ok and path:
+            print(f"\n[OK] Download complete! -> {path}")
+            if not no_metadata:
+                enhance_metadata(query, "", output,
+                                 embed_thumbnail=embed_thumbnail, filepath=path)
+            return {
+                "ok": True, "platform": "soulseek", "engine": "p2p",
+                "query": query, "format": fmt, "output": output,
+                "metadata": not no_metadata,
+            }
+
     print("\n[FAIL] Soulseek download failed.")
     return {"ok": False, "platform": "soulseek", "error": "download failed"}
 
