@@ -339,8 +339,7 @@ def search(query, username=None, password=None, wait=15, max_results=50, proxy="
 
     actual_proxy = proxy or _detect_proxy()
     if not actual_proxy:
-        actual_proxy = _SOCKS5_DEFAULT
-        print(f"  Using default proxy: {actual_proxy}")
+        print(f"  No proxy configured (VPS is outside China, direct connection).")
 
     async def _run():
         async with _SoulseekSession(u, p, actual_proxy) as sess:
@@ -356,7 +355,7 @@ def download(target_user, remote_path, output_dir, username=None, password=None,
 
     actual_proxy = proxy or _detect_proxy()
     if not actual_proxy:
-        actual_proxy = _SOCKS5_DEFAULT
+        print(f"  No proxy configured (VPS is outside China, direct connection).")
 
     async def _run():
         async with _SoulseekSession(u, p, actual_proxy) as sess:
@@ -377,7 +376,7 @@ def search_and_download(query, output_dir, username=None, password=None, wait=15
 
     actual_proxy = proxy or _detect_proxy()
     if not actual_proxy:
-        actual_proxy = _SOCKS5_DEFAULT
+        print(f"  No proxy configured (VPS is outside China, direct connection).")
 
     os.makedirs(output_dir, exist_ok=True)
 
@@ -417,7 +416,7 @@ def download_best(candidates, output_dir, username=None, password=None, max_retr
 
     actual_proxy = proxy or _detect_proxy()
     if not actual_proxy:
-        actual_proxy = _SOCKS5_DEFAULT
+        print(f"  No proxy configured (VPS is outside China, direct connection).")
 
     os.makedirs(output_dir, exist_ok=True)
 
