@@ -160,19 +160,20 @@ class _SoulseekSession:
                     obfuscated_port=0,
                     error_mode=ListeningConnectionErrorMode.ALL,
                 ),
-                upnp={'enable': False},
             ),
             shares=SharesSettings(download=''),
         )
         self.client = SoulSeekClient(settings)
 
-        # ── Monkey-patch 1: tolerate listening port failure ──
+        # ── Monkey-patch: tolerate listening port failure ──
         from aioslsk.exceptions import ListeningConnectionFailedError
         from aioslsk.network.connection import ConnectionState, CloseReason
         from aioslsk.exceptions import ConnectionFailedError as ConnFailed
 
-        _orig_net_init = type(self.client.network).initialize
         async def _patched_init():
+            """Run original init, but don't crash on listening port failure."""
+            from aioslsk.network import upnp as _upnp
+            self.client.network._upnp = _upnp.UPNP()
             try:
                 await self.client.network.connect_listening_ports()
             except ListeningConnectionFailedError:
