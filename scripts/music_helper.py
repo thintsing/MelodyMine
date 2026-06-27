@@ -1594,6 +1594,7 @@ def cmd_download(
         return _do_soulseek_download(
             query, output, fmt, bitrate, embed_thumbnail, no_metadata,
             slsk_user=slsk_user, slsk_pass=slsk_pass,
+            proxy=proxy,
         )
 
     # ── YouTube ──
@@ -1609,6 +1610,7 @@ def cmd_download(
 def _do_soulseek_download(
     query, output, fmt, bitrate, embed_thumbnail, no_metadata,
     slsk_user=None, slsk_pass=None,
+    proxy="",
 ):
     """Download from Soulseek P2P network with multi-candidate retry."""
     if not output:
@@ -1626,7 +1628,8 @@ def _do_soulseek_download(
     print("[1/3] Searching Soulseek network...")
     # Extended wait (20s) for more complete search results
     results = soulseek_client.search(
-        query, username=slsk_user, password=slsk_pass, wait=20)
+        query, username=slsk_user, password=slsk_pass, wait=20,
+        proxy=proxy)
 
     if not results:
         print("  No results found on Soulseek.")
@@ -1664,9 +1667,12 @@ def _do_soulseek_download(
     print()
 
     print("[2/3] Trying candidates (multi-retry enabled)...")
+    if proxy:
+        print(f"  Proxy: {proxy}")
     ok, path = soulseek_client.download_best(
         candidates, output,
-        username=slsk_user, password=slsk_pass, max_retries=2)
+        username=slsk_user, password=slsk_pass, max_retries=2,
+        proxy=proxy)
 
     if ok and path:
         print(f"\n[OK] Download complete! -> {path}")
@@ -2096,7 +2102,7 @@ Examples:
                       choices=["auto", "mp3", "flac", "m4a", "opus", "wav", "vorbis"],
                       help="Output format. 'auto' probes the source: flac if lossless, else mp3 320K")
     p_dl.add_argument("--output", default=None, help="Output dir (default: ~/Music/MelodyMine)")
-    p_dl.add_argument("--proxy", default=None, help="Proxy for YouTube (e.g. socks5://host:port)")
+    p_dl.add_argument("--proxy", default=None, help="Proxy for YouTube/Soulseek (e.g. socks5://127.0.0.1:7897)")
     p_dl.add_argument("--cookies", default=None, help="cookies.txt path for YouTube sign-in/bot checks")
     p_dl.add_argument("--bitrate", default=None, help="Audio bitrate (e.g. 320K)")
     p_dl.add_argument("--index", type=int, default=1, help="Search result index (1-based)")

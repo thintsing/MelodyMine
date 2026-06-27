@@ -22,6 +22,50 @@ from aioslsk.transfer.model import Transfer as SlskTransfer
 from aioslsk.transfer.state import TransferState
 
 
+class _SocksProxy:
+    """Context manager that monkey-patches socket to route through SOCKS/HTTP proxy."""
+    def __init__(self, proxy_url=""):
+        self._orig = None
+        self._proxy = proxy_url
+
+    def __enter__(self):
+        if not self._proxy:
+            return self
+        import socket as _socket
+        self._orig = _socket.socket
+        # Parse proxy URL: socks5://127.0.0.1:7897 or http://127.0.0.1:7897
+        from urllib.parse import urlparse
+        parsed = urlparse(self._proxy)
+        scheme = parsed.scheme.lower()
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 7897
+        proxy_type = None
+        if scheme in ("socks5", "socks5h"):
+            import socks
+            proxy_type = socks.SOCKS5
+            if scheme == "socks5h":
+                proxy_type = socks.SOCKS5
+        elif scheme == "http":
+            import socks
+            proxy_type = socks.HTTP
+        elif scheme == "socks4":
+            import socks
+            proxy_type = socks.SOCKS4
+        else:
+            print(f"  [!] Unknown proxy scheme: {scheme}, ignoring")
+            return self
+        import socks as _socks
+        _socks.set_default_proxy(proxy_type, addr=host, port=port)
+        _socket.socket = _socks.socksocket
+        print(f"  Proxy active: {scheme}://{host}:{port}")
+        return self
+
+    def __exit__(self, *args):
+        if self._orig is not None:
+            import socket as _socket
+            _socket.socket = self._orig
+
+
 class _NoopTransferCache:
     """Minimal TransferCache implementation (no persistence)."""
     def read(self) -> list[SlskTransfer]:
@@ -85,9 +129,16 @@ async def _async_search(query, username, password, wait=15):
     return results
 
 
-def search(query, username=None, password=None, wait=15, max_results=50):
+def search(query, username=None, password=None, wait=15, max_results=50, proxy=""):
     """
     Search Soulseek network for audio files.
+
+    Args:
+        query: Search string
+        username/password: Soulseek credentials (or use env vars)
+        wait: Seconds to wait for results
+        max_results: Max files to return
+        proxy: Proxy URL (e.g. "socks5://127.0.0.1:7897")
 
     Returns list of dicts::
         [
@@ -110,7 +161,8 @@ def search(query, username=None, password=None, wait=15, max_results=50):
     if not username:
         return []
 
-    results = asyncio.run(_async_search(query, username, password, wait))
+    with _SocksProxy(proxy):
+        results = asyncio.run(_async_search(query, username, password, wait))
 
     # Flatten: each SearchResult has multiple shared_items
     flat = []
@@ -212,7 +264,7 @@ async def _async_download(username, password, target_user, remote_path, output_d
         await client.stop()
 
 
-def download(target_user, remote_path, output_dir, username=None, password=None, timeout=120):
+def download(target_user, remote_path, output_dir, username=None, password=None, timeout=120, proxy=""):
     """
     Download a file from a Soulseek user.
 
@@ -221,6 +273,7 @@ def download(target_user, remote_path, output_dir, username=None, password=None,
         remote_path: Full remote file path as returned by search()
         output_dir: Local directory to save the file
         username/password: Soulseek credentials (or use env vars)
+        proxy: Proxy URL (e.g. "socks5://127.0.0.1:7897")
 
     Returns:
         (True, local_filepath) on success, (False, None) on failure
@@ -232,16 +285,17 @@ def download(target_user, remote_path, output_dir, username=None, password=None,
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        success, path = asyncio.run(
-            _async_download(username, password, target_user, remote_path, output_dir, timeout)
-        )
+        with _SocksProxy(proxy):
+            success, path = asyncio.run(
+                _async_download(username, password, target_user, remote_path, output_dir, timeout)
+            )
         return success, path
     except Exception as e:
         print(f"  [!] Soulseek download error: {e}")
         return False, None
 
 
-def download_best(candidates, output_dir, username=None, password=None, max_retries=3):
+def download_best(candidates, output_dir, username=None, password=None, max_retries=3, proxy=""):
     """
     Try multiple Soulseek candidates in order until one succeeds.
 
@@ -282,7 +336,8 @@ def download_best(candidates, output_dir, username=None, password=None, max_retr
                   f"(attempt {attempt + 1}/{max_retries})")
             ok, path = download(
                 target_user, remote_path, output_dir,
-                username=username, password=password, timeout=to)
+                username=username, password=password, timeout=to,
+                proxy=proxy)
             if ok and path:
                 return True, path
             if attempt < max_retries - 1:
