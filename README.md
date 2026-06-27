@@ -72,6 +72,7 @@ Force a platform:
 ```bash
 python scripts/music_helper.py download "周杰伦 稻香" --platform bilibili
 python scripts/music_helper.py download "The Weeknd Blinding Lights" --platform youtube
+python scripts/music_helper.py download "Air Supply Complete" --platform soulseek
 ```
 
 Choose format, bitrate, output folder, or search result:
@@ -113,7 +114,8 @@ python scripts/music_helper.py check
 python scripts/music_helper.py download "query" [options]
 
 Options:
-  --platform {auto,bilibili,youtube}  Default: auto
+  --platform {auto,bilibili,youtube,ytmusic,soulseek}
+                                      Default: auto
   --format {auto,mp3,flac,m4a,opus,wav,vorbis}
                                       Default: auto (flac if lossless, else mp3 320K)
   --output PATH
@@ -125,6 +127,8 @@ Options:
   --no-metadata
   --dry-run                           Preview command without executing
   --json                              Machine-readable JSON output
+  --slsk-user USER                    Soulseek username (or set SLSK_USERNAME env var)
+  --slsk-pass PASS                    Soulseek password (or set SLSK_PASSWORD env var)
 
 python scripts/music_helper.py meta "filepath" [options]
 
@@ -143,6 +147,7 @@ Options:
 | Spotify URL | spotDL | Auto-installs spotDL on first use if possible. |
 | NetEase URL (`music.163.com`) | NetEase direct → Bilibili/YouTube | Song name extracted via NetEase API. Tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube if copyrighted. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct | No search step — downloads the URL directly. YouTube may need `--proxy`. |
+| Soulseek P2N (`--platform soulseek`) | Soulseek network | Searches direct from sharers. Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads best FLAC from first user with free slots. |
 
 ## Advanced Spotify Operations
 
@@ -202,9 +207,17 @@ MelodyMine/
 │   ├── melodymine_common.py   # Shared infra: Python/venv/pip/ffmpeg/proxy detection
 │   ├── music_helper.py       # Main setup/search/download helper
 │   ├── spotify_helper.py     # Advanced spotDL operations
+│   ├── soulseek_client.py    # Soulseek P2P search/download (aioslsk)
+│   ├── bili_client.py        # Bilibili WBI API search (stdlib only)
+│   ├── netease_client.py     # NetEase Cloud Music API client (stdlib only)
+│   ├── ytmusic_client.py     # YouTube Music API search (ytmusicapi)
+│   ├── mbrainz_client.py     # MusicBrainz metadata lookup (stdlib only)
+│   ├── cover_client.py       # Cover art downloader (stdlib only)
 │   └── requirements.txt
 ├── tests/
-│   └── test_helpers.py       # Unit tests for pure functions (stdlib unittest)
+│   ├── test_helpers.py       # Unit tests for pure functions (stdlib unittest)
+│   ├── test_api_clients.py   # Unit tests for API client modules
+│   └── test_ytmusic_client.py# Unit tests for YouTube Music search
 └── references/
     ├── usage.md              # spotDL CLI reference
     └── config.md             # spotDL config reference
