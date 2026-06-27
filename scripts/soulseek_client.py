@@ -22,48 +22,84 @@ from aioslsk.transfer.model import Transfer as SlskTransfer
 from aioslsk.transfer.state import TransferState
 
 
-class _SocksProxy:
-    """Context manager that monkey-patches socket to route through SOCKS/HTTP proxy."""
+def _patch_open_connection(proxy_url):
+    """Monkey-patch asyncio.open_connection to route through SOCKS5/HTTP proxy.
+
+    Uses PySocks to create a proxied socket, then passes it to
+    asyncio.open_connection(sock=...) so all aioslsk traffic (server
+    login + peer connections) goes through the proxy.
+
+    Returns a cleanup callable to restore the original.
+    """
+    if not proxy_url:
+        return lambda: None
+
+    from urllib.parse import urlparse
+    parsed = urlparse(proxy_url)
+    scheme = parsed.scheme.lower()
+    proxy_host = parsed.hostname or "127.0.0.1"
+    proxy_port = parsed.port or 7897
+
+    import socks as _socks
+    import asyncio as _asyncio
+
+    _orig_open_connection = _asyncio.open_connection
+
+    # Determine PySocks proxy type
+    _proxy_type = None
+    if scheme in ("socks5", "socks5h"):
+        _proxy_type = _socks.SOCKS5
+    elif scheme == "socks4":
+        _proxy_type = _socks.SOCKS4
+    elif scheme == "http":
+        _proxy_type = _socks.HTTP
+    else:
+        print(f"  [!] Unknown proxy scheme: {scheme}, ignoring")
+        return lambda: None
+
+    async def _proxied_open_connection(host=None, port=None, **kwargs):
+        """Create a proxied socket and pass it to asyncio.open_connection."""
+        kwargs.pop("sock", None)
+
+        # Create a SOCKS socket and connect through the proxy (can block,
+        # so run in executor to avoid blocking the asyncio event loop)
+        proxied_sock = _socks.socksocket()
+        proxied_sock.set_proxy(_proxy_type, addr=proxy_host, port=proxy_port)
+        proxied_sock.settimeout(30)
+        loop = _asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, lambda: proxied_sock.connect((host, port)))
+        except Exception as exc:
+            proxied_sock.close()
+            raise ConnectionError(f"Proxy connect to {host}:{port} failed: {exc}")
+
+        kwargs["sock"] = proxied_sock
+        return await _orig_open_connection(host=None, port=None, **kwargs)
+
+    _asyncio.open_connection = _proxied_open_connection
+
+    def _restore():
+        _asyncio.open_connection = _orig_open_connection
+
+    return _restore
+
+
+class _ProxyScope:
+    """Context manager that wraps asyncio.open_connection for SOCKS5 proxying."""
     def __init__(self, proxy_url=""):
-        self._orig = None
-        self._proxy = proxy_url
+        self._restore = None
+        self._url = proxy_url
 
     def __enter__(self):
-        if not self._proxy:
+        if not self._url:
             return self
-        import socket as _socket
-        self._orig = _socket.socket
-        # Parse proxy URL: socks5://127.0.0.1:7897 or http://127.0.0.1:7897
-        from urllib.parse import urlparse
-        parsed = urlparse(self._proxy)
-        scheme = parsed.scheme.lower()
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 7897
-        proxy_type = None
-        if scheme in ("socks5", "socks5h"):
-            import socks
-            proxy_type = socks.SOCKS5
-            if scheme == "socks5h":
-                proxy_type = socks.SOCKS5
-        elif scheme == "http":
-            import socks
-            proxy_type = socks.HTTP
-        elif scheme == "socks4":
-            import socks
-            proxy_type = socks.SOCKS4
-        else:
-            print(f"  [!] Unknown proxy scheme: {scheme}, ignoring")
-            return self
-        import socks as _socks
-        _socks.set_default_proxy(proxy_type, addr=host, port=port)
-        _socket.socket = _socks.socksocket
-        print(f"  Proxy active: {scheme}://{host}:{port}")
+        self._restore = _patch_open_connection(self._url)
+        print(f"  Proxy active: {self._url}")
         return self
 
     def __exit__(self, *args):
-        if self._orig is not None:
-            import socket as _socket
-            _socket.socket = self._orig
+        if self._restore:
+            self._restore()
 
 
 class _NoopTransferCache:
@@ -161,7 +197,7 @@ def search(query, username=None, password=None, wait=15, max_results=50, proxy="
     if not username:
         return []
 
-    with _SocksProxy(proxy):
+    with _ProxyScope(proxy):
         results = asyncio.run(_async_search(query, username, password, wait))
 
     # Flatten: each SearchResult has multiple shared_items
@@ -285,7 +321,7 @@ def download(target_user, remote_path, output_dir, username=None, password=None,
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        with _SocksProxy(proxy):
+        with _ProxyScope(proxy):
             success, path = asyncio.run(
                 _async_download(username, password, target_user, remote_path, output_dir, timeout)
             )
