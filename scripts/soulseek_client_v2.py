@@ -147,7 +147,8 @@ class _SoulseekSession:
         from aioslsk.settings import (Settings, CredentialsSettings, NetworkSettings,
                                        SharesSettings, ServerSettings,
                                        ReconnectSettings, ListeningSettings,
-                                       ListeningConnectionErrorMode)
+                                       ListeningConnectionErrorMode,
+                                       UpnpSettings)
 
         settings = Settings(
             credentials=CredentialsSettings(username=self._username, password=self._password),
@@ -160,6 +161,7 @@ class _SoulseekSession:
                     obfuscated_port=0,
                     error_mode=ListeningConnectionErrorMode.ALL,
                 ),
+                upnp=UpnpSettings(enabled=True, check_interval=30, search_timeout=5),
             ),
             shares=SharesSettings(download=''),
         )
@@ -181,14 +183,15 @@ class _SoulseekSession:
             await self.client.network.connect_server()
         self.client.network.initialize = _patched_init
 
-        # ── Monkey-patch 2: proxy only the server connection ─
+        # ── Monkey-patch 2: proxy ALL connections (like SoulseekQt) ──
         if self._proxy:
             print(f"  Proxy active: {self._proxy}")
-            _orig_server_conn = type(self.client.network).connect_server
+            import asyncio as _asyncio
 
+            # 2a: Server connection via proxy
+            _orig_server_conn = type(self.client.network).connect_server
             async def _proxied_connect_server():
                 """Connect to Soulseek server via SOCKS5 proxy."""
-                import asyncio as _asyncio
                 conn = self.client.network.server_connection
                 await conn.set_state(ConnectionState.CONNECTING)
                 try:
@@ -202,8 +205,18 @@ class _SoulseekSession:
                 except (Exception, _asyncio.TimeoutError) as exc:
                     await conn.disconnect(CloseReason.CONNECT_FAILED)
                     raise ConnFailed(f"{conn.hostname}:{conn.port} : failed to connect") from exc
-
             self.client.network.connect_server = _proxied_connect_server
+
+            # 2b: Proxy ALL peer connections (distributed, peer control, etc.)
+            _orig_open_conn = _asyncio.open_connection
+            async def _proxied_open_conn(host=None, port=None, *, sock=None, **kwargs):
+                if sock is not None:
+                    # Already has a proxied socket (server connection)
+                    return await _orig_open_conn(sock=sock, **kwargs)
+                # Proxy this peer connection
+                proxy_sock = _build_proxied_socket(host, port, self._proxy, timeout=30)
+                return await _orig_open_conn(sock=proxy_sock)
+            _asyncio.open_connection = _proxied_open_conn
 
         await self.client.start()
         await self.client.login()
