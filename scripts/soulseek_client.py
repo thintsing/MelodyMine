@@ -36,14 +36,10 @@ def _detect_proxy():
     Returns a proxy URL string (e.g. ``socks5://127.0.0.1:7897``) or
     empty string if no proxy is detected.
     """
-    # 1. Environment variables
-    for var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
-        val = os.environ.get(var, "")
-        if val:
-            return val
-
-    # 2. Probe common local proxy ports
     import socket as _sock
+    from urllib.parse import urlparse
+
+    # 1. Probe common local proxy ports first (prefer SOCKS5)
     for port in _PROXY_PORTS:
         try:
             s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
@@ -53,6 +49,17 @@ def _detect_proxy():
             return f"socks5://127.0.0.1:{port}"
         except Exception:
             continue
+
+    # 2. Environment variables (fallback)
+    for var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
+        val = os.environ.get(var, "")
+        if val:
+            # If env var points to http:// on a known Clash mixed-port, upgrade to SOCKS5
+            parsed = urlparse(val)
+            if parsed.scheme in ("http", "https") and parsed.port in _PROXY_PORTS:
+                return f"socks5://{parsed.hostname}:{parsed.port}"
+            return val
+
     return ""
 
 
@@ -163,7 +170,7 @@ class _SoulseekSession:
                     reconnect=ReconnectSettings(auto=True, timeout=10),
                 ),
                 listening=ListeningSettings(
-                    port=60001,
+                    port=0,  # OS-assigned port avoids conflicts between sessions
                     obfuscated_port=0,
                     error_mode=ListeningConnectionErrorMode.ALL,
                 ),
