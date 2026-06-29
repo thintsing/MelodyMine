@@ -529,18 +529,11 @@ def _read_audio_tags(filepath):
         if result.returncode != 0 or not result.stdout.strip():
             return None, None
 
-        # ffprobe CSV output is in order of requested keys; try case variants
+        # ffprobe CSV output is in order of requested keys:
+        # format_tags=artist,title,ARTIST,TITLE → 4 comma-separated values
         fields = result.stdout.strip().split(",")
-        artist = title = None
-        for f in fields:
-            f = f.strip()
-            if not f:
-                continue
-            # Distinguish: title is usually longer / contains non-ascii
-            # More reliable: ffprobe returns in requested order
-            # format_tags=artist,title,ARTIST,TITLE → 4 comma-separated values
-            pass
         # Parse by position: artist, title, ARTIST, TITLE
+        artist = title = None
         if len(fields) >= 4:
             artist = fields[2] or fields[0] or None  # prefer ARTIST
             title = fields[3] or fields[1] or None    # prefer TITLE
@@ -1511,7 +1504,7 @@ def cmd_download(
         debug_log("route: netease url → resolve → direct/bilibili/youtube")
         print("[NetEase] Resolving song info from URL...")
         song_id = extract_netease_song_id(query)
-        resolved = resolve_netease_url(query, python=py)
+        resolved = resolve_netease_url(query)
         if resolved:
             print(f"  Resolved: {resolved}")
         else:
@@ -1949,7 +1942,8 @@ def _do_youtube_download(
         print("  3. Proxy connection failed")
         print("     → Check proxy is working: curl --proxy socks5://host:port https://youtube.com")
     print("  4. Try different search terms (English names for Chinese songs)")
-    sys.exit(1)
+    return {"ok": False, "platform": "youtube", "query": query,
+            "error": "YouTube download failed (all attempts)"}
 
 
 def _download_direct(
@@ -2023,7 +2017,8 @@ def _download_direct(
         print("  → Check proxy is working, or try: --cookies cookies.txt")
     else:
         print("  → Check the URL is valid and publicly accessible.")
-    sys.exit(1)
+    return {"ok": False, "platform": source.lower(), "query": url,
+            "error": f"{source} download failed (all attempts)"}
 
 
 def _netease_direct_download(song_id, song_name, output, fmt, bitrate, python):
@@ -2117,7 +2112,8 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
         print("ERROR: spotDL installation failed.")
         print("       Try manually: pip install spotdl")
         print("       Or search by song name instead of Spotify URL.")
-        sys.exit(1)
+        return {"ok": False, "platform": "spotify", "query": url,
+                "error": "spotDL installation failed"}
 
     if not output:
         output = DEFAULT_OUTPUT
@@ -2147,7 +2143,8 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
         print("  1. KeyError 'uri'   -> SpotipyFree API bug")
         print("  2. YouTube blocked  -> Ensure proxy is working")
         print("  3. Fallback         -> Search by song name instead of Spotify URL")
-        sys.exit(1)
+        return {"ok": False, "platform": "spotify", "query": url,
+                "error": f"spotDL exited with code {exit_code}"}
 
     print(f"\n[OK] Download complete!")
     print(f"     Files saved to: {output}")

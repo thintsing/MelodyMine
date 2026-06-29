@@ -236,8 +236,15 @@ class _SoulseekSession:
             _asyncio.open_connection = _proxied_open_conn
             self._restore_open_conn = _restore
 
-        await self.client.start()
-        await self.client.login()
+        try:
+            await self.client.start()
+            await self.client.login()
+        except Exception:
+            # Ensure monkey-patches are restored even if start/login fails
+            if self._restore_open_conn:
+                self._restore_open_conn()
+                self._restore_open_conn = None
+            raise
         return self
 
     async def __aexit__(self, *args):

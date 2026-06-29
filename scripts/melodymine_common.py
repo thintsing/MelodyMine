@@ -287,7 +287,8 @@ def check_module(python, module_name, timeout=10):
         )
         if result.returncode == 0:
             return result.stdout.strip()
-    except Exception:
+    except Exception as e:
+        debug_log(f"check_module failed for {module_name}: {e}")
         pass
     return None
 
@@ -314,7 +315,8 @@ def pip_install(python, packages, timeout=180):
             return True
         if "externally-managed-environment" not in (result.stderr or "").lower():
             return False
-    except Exception:
+    except Exception as e:
+        debug_log(f"pip_install attempt 1 failed: {e}")
         return False
 
     # Attempt 2: --user install (bypasses PEP 668 for user site-packages)
@@ -326,7 +328,8 @@ def pip_install(python, packages, timeout=180):
         )
         if result.returncode == 0:
             return True
-    except Exception:
+    except Exception as e:
+        debug_log(f"pip_install attempt 2 (--user) failed: {e}")
         pass
 
     return False
@@ -466,7 +469,8 @@ def find_ffmpeg(python=None):
             if result.returncode == 0:
                 _CACHED_FFMPEG = exe
                 return exe
-        except Exception:
+        except Exception as e:
+            debug_log(f"ffmpeg probe failed for '{exe}': {e}")
             pass
 
     # 2. Try imageio-ffmpeg (bundled static ffmpeg binary)
@@ -487,7 +491,8 @@ def find_ffmpeg(python=None):
                 if path and os.path.isfile(path):
                     _CACHED_FFMPEG = path
                     return path
-        except Exception:
+        except Exception as e:
+            debug_log(f"imageio-ffmpeg probe failed: {e}")
             pass
 
     return None
