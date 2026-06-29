@@ -185,15 +185,15 @@ def _collect_python_candidates():
         candidates.append(os.path.join(hermes_home, "bin", "python3"))
 
     # 4. uv-managed CPython (used by Hermes and standalone uv installs)
-    #    Win: %APPDATA%\uv\data\python\cpython-3.1*\python.exe
-    #    Unix: ~/.local/share/uv/python/cpython-3.1*/bin/python3
+    #    Win: %APPDATA%\uv\data\python\cpython-3.*\python.exe
+    #    Unix: ~/.local/share/uv/python/cpython-3.*/bin/python3
     uv_py_root = (
         os.path.join(os.environ.get("APPDATA", ""), "uv", "data", "python")
         if IS_WIN else os.path.join(HOME, ".local", "share", "uv", "python")
     )
     if os.path.isdir(uv_py_root):
         for v in sorted(os.listdir(uv_py_root), reverse=True):
-            if not v.startswith("cpython-3.1"):
+            if not v.startswith("cpython-3."):
                 continue
             if IS_WIN:
                 candidates.append(os.path.join(uv_py_root, v, "python.exe"))
@@ -273,7 +273,7 @@ def _collect_python_candidates():
     return unique
 
 
-def check_module(python, module_name, timeout=10):
+def check_module(python, module_name, timeout=15):
     """Check if a Python has a module installed. Returns version string or None."""
     # yt_dlp stores version in yt_dlp.version.__version__, not top-level
     version_expr = {
@@ -451,8 +451,13 @@ def find_python(required_module, install_packages):
 def find_ffmpeg(python=None):
     """Find ffmpeg executable.
 
-    Strategy: system PATH -> imageio-ffmpeg (auto-installed pip package with
-    bundled binary). Returns the ffmpeg command/path, or None.
+    Strategy: system PATH -> imageio-ffmpeg (bundled static ffmpeg binary).
+
+    When ``python`` is provided, the function probes imageio-ffmpeg via that
+    interpreter (auto-installing the package if missing).  When ``python`` is
+    None, only the system PATH is checked — no side-effects.
+
+    Returns the ffmpeg command/path, or None.
     """
     global _CACHED_FFMPEG
     if _CACHED_FFMPEG:
@@ -473,27 +478,28 @@ def find_ffmpeg(python=None):
             debug_log(f"ffmpeg probe failed for '{exe}': {e}")
             pass
 
-    # 2. Try imageio-ffmpeg (bundled static ffmpeg binary)
+    # 2. Try imageio-ffmpeg (bundled static ffmpeg binary) — only when caller
+    #    provides a Python path (i.e. they've already done ensure_deps()).
     if python is None:
-        python, _ = find_python("yt_dlp", ["yt-dlp", "requests", "pysocks", "imageio-ffmpeg"])
-    if python:
-        if not check_module(python, "imageio_ffmpeg"):
-            print("  Auto-installing: imageio-ffmpeg (bundled ffmpeg binary)")
-            pip_install(python, ["imageio-ffmpeg"])
-        try:
-            result = subprocess.run(
-                [python, "-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"],
-                capture_output=True, text=True, timeout=15,
-                env=make_subprocess_env(), encoding="utf-8", errors="replace",
-            )
-            if result.returncode == 0:
-                path = result.stdout.strip()
-                if path and os.path.isfile(path):
-                    _CACHED_FFMPEG = path
-                    return path
-        except Exception as e:
-            debug_log(f"imageio-ffmpeg probe failed: {e}")
-            pass
+        return None
+
+    if not check_module(python, "imageio_ffmpeg"):
+        print("  Auto-installing: imageio-ffmpeg (bundled ffmpeg binary)")
+        pip_install(python, ["imageio-ffmpeg"])
+    try:
+        result = subprocess.run(
+            [python, "-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"],
+            capture_output=True, text=True, timeout=15,
+            env=make_subprocess_env(), encoding="utf-8", errors="replace",
+        )
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            if path and os.path.isfile(path):
+                _CACHED_FFMPEG = path
+                return path
+    except Exception as e:
+        debug_log(f"imageio-ffmpeg probe failed: {e}")
+        pass
 
     return None
 
@@ -510,7 +516,7 @@ def is_socks_proxy(proxy_url):
 # ── Local proxy auto-detection ──────────────────────────────────────
 
 # Common Clash / mixed-proxy ports to probe (in priority order).
-_PROXY_PORTS = [7897, 7890, 1080]
+_PROXY_PORTS = [7897, 7890, 1080, 2080, 8118]
 
 # Default proxy URL when a Clash port is detected.
 _LOCALHOST_SOCKS5 = "socks5://127.0.0.1:{port}"
@@ -537,8 +543,12 @@ def detect_proxy():
         val = os.environ.get(var, "")
         if val:
             parsed = urlparse(val)
-            if parsed.scheme in ("http", "https") and parsed.port in _PROXY_PORTS:
-                return f"socks5://{parsed.hostname}:{parsed.port}"
+            # Preserve the original scheme — do NOT guess SOCKS for HTTP proxy vars.
+            if parsed.scheme in ("http", "https"):
+                if parsed.hostname in ("127.0.0.1", "localhost") and parsed.port in _PROXY_PORTS:
+                    # Clash mixed port: HTTP proxy is also a SOCKS5 proxy on the same port.
+                    return _LOCALHOST_SOCKS5.format(port=parsed.port)
+                return val
             return val
 
     # 2. Probe common local proxy ports (implicit detection)
@@ -699,7 +709,8 @@ def run_python_script(python, script, args=(), timeout=30):
 
 # ─── Debug logging ───────────────────────────────────────────────────────
 
-DEBUG_LOG_DIR = os.path.join(HOME, ".melodymine")
+_DEBUG_HOME = HOME or os.path.expanduser("~") or os.getcwd()
+DEBUG_LOG_DIR = os.path.join(_DEBUG_HOME, ".melodymine")
 DEBUG_LOG_PATH = os.path.join(DEBUG_LOG_DIR, "last_run.log")
 _DEBUG_ENABLED = False
 

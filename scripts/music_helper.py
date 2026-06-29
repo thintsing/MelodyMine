@@ -964,6 +964,167 @@ def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False):
     return result
 
 
+def _try_soulseek_once(query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+                      slsk_user=None, slsk_pass=None, proxy=None):
+    """Try a Soulseek P2P download once.  Returns result dict (ok=True on success)."""
+    return _do_soulseek_download(
+        query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+        slsk_user=slsk_user, slsk_pass=slsk_pass, proxy=proxy or "",
+    )
+
+
+def _soulseek_with_fallback(py, query, output, fmt, proxy, bitrate, index,
+                            embed_thumbnail, no_metadata, cookies, before,
+                            slsk_user, slsk_pass, quick, fallback_platform):
+    """Try Soulseek first; if it fails or --quick, fall back to the named platform."""
+    if not quick:
+        print("=" * 60)
+        print(f"  Platform : Soulseek (P2P) — primary")
+        print(f"  Query    : {query}")
+        print(f"  Format   : {fmt}")
+        print(f"  Output   : {output}")
+        print("=" * 60)
+        print()
+        result = _try_soulseek_once(
+            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+            slsk_user=slsk_user, slsk_pass=slsk_pass, proxy=proxy,
+        )
+        if result.get("ok"):
+            return result
+        print(f"\n  Soulseek failed. Falling back to {fallback_platform}...")
+    else:
+        print(f"  [--quick] Soulseek skipped, going straight to {fallback_platform}...")
+    return None  # signal that fallback is needed
+
+
+# ── Per-platform download pipelines ──────────────────────────────────────
+
+def _download_bilibili(
+    py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+    no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+):
+    """Bilibili pipeline: Soulseek → wbi search + yt-dlp → API direct → YouTube."""
+    # Tier 1: Soulseek P2P
+    slsk_result = _soulseek_with_fallback(
+        py, query, output, fmt, proxy, bitrate, index,
+        embed_thumbnail, no_metadata, cookies, before,
+        slsk_user, slsk_pass, quick, fallback_platform="Bilibili",
+    )
+    if slsk_result:
+        return slsk_result
+
+    # Tier 2: Bilibili wbi search + yt-dlp download
+    print("=" * 60)
+    print(f"  Platform : Bilibili (direct, no proxy)")
+    print(f"  Query    : {query}")
+    print(f"  Format   : {fmt}")
+    print(f"  Output   : {output}")
+    print("=" * 60)
+    print()
+
+    print("[1/3] Searching Bilibili...")
+    results = bili_client.search(query, limit=max(index, 5))
+    if not results:
+        print("\n  Bilibili search failed (rate-limited or network issue).")
+        print("  Falling back to YouTube...")
+        return _do_youtube_download(
+            py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+            no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+        )
+
+    results = rank_bili_results(results)
+    skipped_accomp = sum(1 for r in results if _is_accompaniment(r.get("title", "")))
+    if skipped_accomp:
+        print(f"  (优先选择带人声版本，已将 {skipped_accomp} 个伴奏/纯音乐结果排后)")
+
+    item = results[min(index - 1, len(results) - 1)]
+    bvid = item["bvid"]
+    url = f"https://www.bilibili.com/video/{bvid}"
+    print(f"  Found: [{item['duration']}] {item['title']}")
+    print(f"  bvid: {bvid}")
+    print()
+    print("[2/3] Downloading via yt-dlp...")
+
+    actual_fmt, actual_bitrate = fmt, bitrate
+    if fmt == "auto":
+        _, codec = _bili_resolve_audio(bvid, python=py)
+        actual_fmt, actual_bitrate, reason = _resolve_auto_fmt(codec, bitrate)
+        print(f"  [auto] {reason}")
+
+    if _ytdlp_download(py, url, output, actual_fmt, actual_bitrate, embed_thumbnail,
+                       bili_ua=True, index=1, cookies=cookies):
+        if not no_metadata:
+            enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+        print(f"\n[OK] Download complete!")
+        print(f"     Files saved to: {output}")
+        return {"ok": True, "platform": "bilibili", "engine": "yt-dlp",
+                "query": query, "source_url": url, "format": actual_fmt,
+                "output": output, "proxy": proxy, "cookies": cookies,
+                "metadata": not no_metadata, "fallback": "bilibili-after-soulseek"}
+
+    # Tier 3: Bilibili API direct download
+    print(f"\n  yt-dlp download failed (likely 412 Precondition Failed).")
+    if _bili_api_download(bvid, output, actual_fmt, actual_bitrate, python=py):
+        if not no_metadata:
+            enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+        print(f"\n[OK] Download complete (via Bilibili API direct)!")
+        print(f"     Files saved to: {output}")
+        return {"ok": True, "platform": "bilibili", "engine": "bili-api-direct",
+                "query": query, "source_url": url, "format": actual_fmt,
+                "output": output, "metadata": not no_metadata,
+                "fallback": "bili-api-direct-after-soulseek"}
+
+    # Tier 4: YouTube fallback
+    print(f"\n  Bilibili all tiers failed. Falling back to YouTube...")
+    result = _do_youtube_download(
+        py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+        no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+    )
+    if result.get("ok"):
+        return result
+
+    print(f"\n  All platforms exhausted. Download failed.")
+    return {"ok": False, "platform": "bilibili", "query": query,
+            "error": "All download tiers exhausted (Soulseek, Bilibili, YouTube)"}
+
+
+def _download_youtube(
+    py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+    no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+):
+    """YouTube pipeline: Soulseek first → YouTube via yt-dlp search + download."""
+    # Tier 1: Soulseek P2P
+    slsk_result = _soulseek_with_fallback(
+        py, query, output, fmt, proxy, bitrate, index,
+        embed_thumbnail, no_metadata, cookies, before,
+        slsk_user, slsk_pass, quick, fallback_platform="YouTube",
+    )
+    if slsk_result:
+        return slsk_result
+
+    # Tier 2: YouTube
+    result = _do_youtube_download(
+        py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+        no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+    )
+    if result.get("ok"):
+        return result
+
+    print(f"\n  All platforms exhausted. Download failed.")
+    return {"ok": False, "platform": "youtube", "query": query,
+            "error": "All download tiers exhausted (Soulseek, YouTube)"}
+
+
+# ── Platform dispatch table ──────────────────────────────────────────────
+
+_PLATFORM_HANDLERS = {
+    "bilibili": _download_bilibili,
+    "youtube": _download_youtube,
+    "ytmusic": "ytmusic",   # handled inline (has its own before_snapshot)
+    "soulseek": "soulseek",  # handled inline (no fallback)
+}
+
+
 def cmd_download(
     query, platform="auto", fmt="flac", output=None,
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
@@ -998,54 +1159,24 @@ def cmd_download(
         sys.exit(1)
     debug_log(f"python={py}")
 
-    # ── Spotify URL → spotDL ──
+    # ── Special routes (no platform selection needed) ──
     if is_spotify_url(query):
         debug_log("route: spotify → spotdl")
-        # spotDL downloads via YouTube (lossy) → auto resolves to mp3.
         if fmt == "auto":
             fmt, bitrate, reason = _resolve_auto_fmt("opus", bitrate)
             debug_log(f"[auto] spotify: {reason}")
         return _download_via_spotdl(py, query, fmt, output, proxy, bitrate)
 
-    # ── NetEase URL → resolve → try direct audio → fallback to Bilibili/YouTube ──
     if is_netease_url(query):
-        debug_log("route: netease url → resolve → direct/bilibili/youtube")
-        print("[NetEase] Resolving song info from URL...")
-        song_id = extract_netease_song_id(query)
-        resolved = resolve_netease_url(query)
-        if resolved:
-            print(f"  Resolved: {resolved}")
-        else:
-            print("  [!] Could not resolve NetEase URL, using raw URL as query")
+        return _download_netease_url(py, query, fmt, output, proxy, bitrate,
+                                     index, embed_thumbnail, no_metadata, cookies)
 
-        # Tier 1: try NetEase direct audio (works for free/non-copyrighted songs)
-        if not output:
-            output = DEFAULT_OUTPUT
-        if song_id and resolved:
-            before = _list_audio_files(output)
-            ok = _netease_direct_download(song_id, resolved, output, fmt, bitrate, py)
-            if ok:
-                if not no_metadata:
-                    enhance_metadata(resolved, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
-                print(f"\n[OK] Download complete (via NetEase direct)!")
-                print(f"     Files saved to: {output}")
-                return {
-                    "ok": True, "platform": "netease", "engine": "netease-outer-url",
-                    "query": resolved, "source_url": query,
-                    "format": fmt, "output": output,
-                    "metadata": not no_metadata, "fallback": False,
-                }
-            print("    Falling back to Bilibili/YouTube search...")
-
-        # Tier 2: fall through to normal Bilibili/YouTube pipeline
-        query = resolved or query
-
-    # ── Direct download URLs (YouTube/SoundCloud/Bandcamp) → yt-dlp directly ──
     if is_direct_download_url(query):
-        debug_log(f"route: direct url → yt-dlp ({'youtube' if is_youtube_url(query) else 'soundcloud' if is_soundcloud_url(query) else 'bandcamp'})")
+        debug_log(f"route: direct url → yt-dlp")
         return _download_direct(py, query, fmt, output, proxy, bitrate,
                                 index, embed_thumbnail, no_metadata, cookies)
 
+    # ── Search-based platforms ──
     if platform == "auto":
         platform = auto_select_platform(query)
         debug_log(f"auto-selected platform: {platform}")
@@ -1053,170 +1184,66 @@ def cmd_download(
     if not output:
         output = DEFAULT_OUTPUT
     os.makedirs(output, exist_ok=True)
-    # Snapshot existing audio so enhance_metadata can target only the new file.
     before = _list_audio_files(output)
 
-    # ── Bilibili: Soulseek first → Bilibili → YouTube ──
-    if platform == "bilibili":
-        # Tier 1: Soulseek P2P (best quality, often lossless)
-        if not quick:
-            print("=" * 60)
-            print(f"  Platform : Soulseek (P2P) — primary")
-            print(f"  Query    : {query}")
-            print(f"  Format   : {fmt}")
-            print(f"  Output   : {output}")
-            print("=" * 60)
-            print()
-            soulseek_result = _do_soulseek_download(
-                query, output, fmt, bitrate, embed_thumbnail, no_metadata,
-                slsk_user=slsk_user, slsk_pass=slsk_pass,
-                proxy=proxy,
-            )
-            if soulseek_result.get("ok"):
-                return soulseek_result
-            print(f"\n  Soulseek failed. Falling back to Bilibili...")
-        else:
-            print("  [--quick] Soulseek skipped, going straight to Bilibili...")
-            soulseek_result = {"ok": False}
-
-        # Tier 2: Bilibili wbi search + yt-dlp download
-        print("=" * 60)
-        print(f"  Platform : Bilibili (direct, no proxy)")
-        print(f"  Query    : {query}")
-        print(f"  Format   : {fmt}")
-        print(f"  Output   : {output}")
-        print("=" * 60)
-        print()
-
-        # Step 1: wbi search
-        print("[1/3] Searching Bilibili...")
-        results = bili_client.search(query, limit=max(index, 5))
-        if not results:
-            print("\n  Bilibili search failed (rate-limited or network issue).")
-            print("  Falling back to YouTube...")
-            return _do_youtube_download(
-                py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-                no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
-            )
-
-        # Reorder so vocal versions rank above accompaniment/instrumental ones.
-        results = rank_bili_results(results)
-        skipped_accomp = sum(1 for r in results if _is_accompaniment(r.get("title", "")))
-        if skipped_accomp:
-            print(f"  (优先选择带人声版本，已将 {skipped_accomp} 个伴奏/纯音乐结果排后)")
-
-        # Step 2: Pick result and download
-        item = results[min(index - 1, len(results) - 1)]
-        bvid = item["bvid"]
-        url = f"https://www.bilibili.com/video/{bvid}"
-        print(f"  Found: [{item['duration']}] {item['title']}")
-        print(f"  bvid: {bvid}")
-        print()
-        print("[2/3] Downloading via yt-dlp...")
-
-        # Resolve auto format from the real audio codec (Bilibili playurl API).
-        if fmt == "auto":
-            _, codec = _bili_resolve_audio(item["bvid"], python=py)
-            fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
-            print(f"  [auto] {reason}")
-
-        ok = _ytdlp_download(
-            py, url, output, fmt, bitrate, embed_thumbnail,
-            bili_ua=True, index=1, cookies=cookies,
+    handler = _PLATFORM_HANDLERS.get(platform)
+    if handler == "soulseek":
+        return _try_soulseek_once(
+            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+            slsk_user=slsk_user, slsk_pass=slsk_pass, proxy=proxy,
         )
-        if ok:
-            if not no_metadata:
-                enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
-            print(f"\n[OK] Download complete!")
-            print(f"     Files saved to: {output}")
-            return {
-                "ok": True,
-                "platform": "bilibili",
-                "engine": "yt-dlp",
-                "query": query,
-                "source_url": url,
-                "format": fmt,
-                "output": output,
-                "proxy": proxy,
-                "cookies": cookies,
-                "metadata": not no_metadata,
-                "fallback": "bilibili-after-soulseek",
-            }
-
-        # Tier 3: Bilibili API direct download
-        print(f"\n  yt-dlp download failed (likely 412 Precondition Failed).")
-        ok_api = _bili_api_download(
-            item["bvid"], output, fmt, bitrate,
-            python=py,
-        )
-        if ok_api:
-            if not no_metadata:
-                enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
-            print(f"\n[OK] Download complete (via Bilibili API direct)!")
-            print(f"     Files saved to: {output}")
-            return {
-                "ok": True, "platform": "bilibili", "engine": "bili-api-direct",
-                "query": query, "source_url": f"https://www.bilibili.com/video/{item['bvid']}",
-                "format": fmt, "output": output,
-                "metadata": not no_metadata, "fallback": "bili-api-direct-after-soulseek",
-            }
-
-        # Tier 4: YouTube fallback
-        print(f"\n  Bilibili all tiers failed. Falling back to YouTube...")
-        result = _do_youtube_download(
-            py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-            no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
-        )
-        if result.get("ok"):
-            return result
-
-        # Tier 5: Soulseek retry (already failed as Tier 1, skip)
-        print(f"\n  All platforms exhausted. Download failed.")
-        return {"ok": False, "platform": "bilibili", "query": query,
-                "error": "All download tiers exhausted (Soulseek, Bilibili, YouTube)"}
-
-    # ── YouTube Music (ytmusicapi search + yt-dlp download) ──
-    if platform == "ytmusic":
+    if handler == "ytmusic":
         return _do_ytmusic_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         )
-
-    # ── Soulseek ──
-    if platform == "soulseek":
-        return _do_soulseek_download(
-            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
-            slsk_user=slsk_user, slsk_pass=slsk_pass,
-            proxy=proxy,
-        )
-
-    # ── YouTube (Soulseek first → YouTube) ──
-    else:
-        # Tier 1: Soulseek P2P
-        if not quick:
-            soulseek_result = _do_soulseek_download(
-                query, output, fmt, bitrate, embed_thumbnail, no_metadata,
-                slsk_user=slsk_user, slsk_pass=slsk_pass,
-                proxy=proxy,
-            )
-            if soulseek_result.get("ok"):
-                return soulseek_result
-            print("\n  Soulseek failed. Falling back to YouTube...")
-        else:
-            print("  [--quick] Soulseek skipped, going straight to YouTube...")
-            soulseek_result = {"ok": False}
-
-        # Tier 2: YouTube
-        result = _do_youtube_download(
+    if callable(handler):
+        return handler(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-            no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+            no_metadata, cookies, before, slsk_user, slsk_pass, quick,
         )
-        if result.get("ok"):
-            return result
 
-        print(f"\n  All platforms exhausted. Download failed.")
-        return {"ok": False, "platform": "youtube", "query": query,
-                "error": "All download tiers exhausted (Soulseek, YouTube)"}
+    # Unknown platform — fall back to youtube
+    return _download_youtube(
+        py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+        no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+    )
+
+
+def _download_netease_url(py, query, fmt, output, proxy, bitrate,
+                          index, embed_thumbnail, no_metadata, cookies):
+    """Handle NetEase URL: resolve → direct audio → fallback to Bilibili/YouTube."""
+    debug_log("route: netease url → resolve → direct/bilibili/youtube")
+    print("[NetEase] Resolving song info from URL...")
+    song_id = extract_netease_song_id(query)
+    resolved = resolve_netease_url(query)
+    if resolved:
+        print(f"  Resolved: {resolved}")
+    else:
+        print("  [!] Could not resolve NetEase URL, using raw URL as query")
+
+    if not output:
+        output = DEFAULT_OUTPUT
+
+    # Tier 1: try NetEase direct audio (works for free/non-copyrighted songs)
+    if song_id and resolved:
+        before = _list_audio_files(output)
+        if _netease_direct_download(song_id, resolved, output, fmt, bitrate, py):
+            if not no_metadata:
+                enhance_metadata(resolved, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+            print(f"\n[OK] Download complete (via NetEase direct)!")
+            print(f"     Files saved to: {output}")
+            return {"ok": True, "platform": "netease", "engine": "netease-outer-url",
+                    "query": resolved, "source_url": query, "format": fmt,
+                    "output": output, "metadata": not no_metadata, "fallback": False}
+        print("    Falling back to Bilibili/YouTube search...")
+
+    # Tier 2: fall through to normal Bilibili/YouTube pipeline via cmd_download
+    new_query = resolved or query
+    return _download_bilibili(
+        py, new_query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+        no_metadata, cookies, _list_audio_files(output), None, None, False,
+    )
 
 
 
