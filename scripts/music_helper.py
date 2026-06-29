@@ -499,6 +499,64 @@ def find_downloaded_file(output_dir, before=None):
     return str(files[0])
 
 
+def _read_audio_tags(filepath):
+    """Read artist and title tags from an audio file via ffprobe.
+
+    Returns (artist, title) tuple. Each is None if missing or unreadable.
+    Never raises — returns (None, None) on any failure.
+    """
+    ffmpeg_exe = find_ffmpeg()
+    if not ffmpeg_exe:
+        return None, None
+    ffprobe_exe = os.path.join(os.path.dirname(ffmpeg_exe), "ffprobe")
+    if os.name == "nt":
+        ffprobe_exe += ".exe"
+    if not os.path.isfile(ffprobe_exe):
+        # imageio-ffmpeg bundles ffprobe alongside ffmpeg; fall back to PATH
+        ffprobe_exe = "ffprobe"
+
+    try:
+        result = subprocess.run(
+            [
+                ffprobe_exe, "-v", "error",
+                "-show_entries", "format_tags=artist,title,ARTIST,TITLE",
+                "-of", "csv=p=0",
+                filepath,
+            ],
+            capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace",
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None, None
+
+        # ffprobe CSV output is in order of requested keys; try case variants
+        fields = result.stdout.strip().split(",")
+        artist = title = None
+        for f in fields:
+            f = f.strip()
+            if not f:
+                continue
+            # Distinguish: title is usually longer / contains non-ascii
+            # More reliable: ffprobe returns in requested order
+            # format_tags=artist,title,ARTIST,TITLE → 4 comma-separated values
+            pass
+        # Parse by position: artist, title, ARTIST, TITLE
+        if len(fields) >= 4:
+            artist = fields[2] or fields[0] or None  # prefer ARTIST
+            title = fields[3] or fields[1] or None    # prefer TITLE
+        elif len(fields) >= 2:
+            artist = fields[0] or None
+            title = fields[1] or None
+        else:
+            return None, None
+
+        artist = artist.strip() if artist else None
+        title = title.strip() if title else None
+        return artist, title
+    except Exception:
+        return None, None
+
+
 def set_metadata(filepath, title=None, artist=None, album=None, cover_path=None):
     """
     Use ffmpeg to set ID3 metadata on an audio file.
@@ -685,6 +743,13 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
         return
     if not os.path.isfile(filepath):
         print(f"  [!] File not found: {filepath}")
+        return
+
+    # ── Skip if file already has meaningful metadata ──
+    existing_artist, existing_title = _read_audio_tags(filepath)
+    if existing_artist and existing_title:
+        print(f"\n  File already tagged: {existing_artist} - {existing_title}")
+        print(f"  Skipping metadata enhancement.")
         return
 
     print(f"\n[3/3] Enhancing metadata...")
