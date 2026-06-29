@@ -1,5 +1,7 @@
 # MelodyMine
 
+[简体中文](README.zh-CN.md)
+
 Download music from Bilibili, YouTube, YouTube Music, Spotify, and Soulseek (P2P) with automatic search, audio conversion, metadata cleanup, and zero-config dependency setup.
 
 MelodyMine runs as a standalone CLI or as a file-based skill for AI assistants — WorkBuddy, Hermes, and OpenClaw. It auto-detects each platform's bundled Python runtime (WorkBuddy/Hermes ship one; OpenClaw users install Python once), so first-run setup is a single command on any of them.
