@@ -233,10 +233,10 @@ def _download_plan(
     if selected == "bilibili":
         url_slot = "https://www.bilibili.com/video/<bvid>"
         notes.append("Bilibili dry-run: bvid is resolved at runtime via wbi search.")
-        notes.append("If Bilibili search/download fails, MelodyMine falls back to YouTube.")
+        notes.append("Priority: Soulseek → Bilibili → YouTube.")
     else:
         url_slot = f"ytsearch:{query}"
-        notes.append("YouTube: yt-dlp search + download in one step.")
+        notes.append("Priority: Soulseek → YouTube (yt-dlp search + download).")
 
     if netease_resolved:
         notes.append("NetEase URL: resolved to song name at runtime, then downloaded via Bilibili/YouTube.")
@@ -1490,8 +1490,26 @@ def cmd_download(
     # Snapshot existing audio so enhance_metadata can target only the new file.
     before = _list_audio_files(output)
 
-    # ── Bilibili: wbi search + yt-dlp download ──
+    # ── Bilibili: Soulseek first → Bilibili → YouTube ──
     if platform == "bilibili":
+        # Tier 1: Soulseek P2P (best quality, often lossless)
+        print("=" * 60)
+        print(f"  Platform : Soulseek (P2P) — primary")
+        print(f"  Query    : {query}")
+        print(f"  Format   : {fmt}")
+        print(f"  Output   : {output}")
+        print("=" * 60)
+        print()
+        soulseek_result = _do_soulseek_download(
+            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+            slsk_user=slsk_user, slsk_pass=slsk_pass,
+            proxy=proxy,
+        )
+        if soulseek_result.get("ok"):
+            return soulseek_result
+
+        # Tier 2: Bilibili wbi search + yt-dlp download
+        print(f"\n  Soulseek failed. Falling back to Bilibili...")
         print("=" * 60)
         print(f"  Platform : Bilibili (direct, no proxy)")
         print(f"  Query    : {query}")
@@ -1552,10 +1570,10 @@ def cmd_download(
                 "proxy": proxy,
                 "cookies": cookies,
                 "metadata": not no_metadata,
-                "fallback": False,
+                "fallback": "bilibili-after-soulseek",
             }
 
-        # Tier 2: Bilibili API direct download
+        # Tier 3: Bilibili API direct download
         print(f"\n  yt-dlp download failed (likely 412 Precondition Failed).")
         ok_api = _bili_api_download(
             item["bvid"], output, fmt, bitrate,
@@ -1570,10 +1588,10 @@ def cmd_download(
                 "ok": True, "platform": "bilibili", "engine": "bili-api-direct",
                 "query": query, "source_url": f"https://www.bilibili.com/video/{item['bvid']}",
                 "format": fmt, "output": output,
-                "metadata": not no_metadata, "fallback": "bili-api-direct",
+                "metadata": not no_metadata, "fallback": "bili-api-direct-after-soulseek",
             }
 
-        # Tier 3: YouTube fallback
+        # Tier 4: YouTube fallback
         print(f"\n  Bilibili all tiers failed. Falling back to YouTube...")
         result = _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
@@ -1582,12 +1600,10 @@ def cmd_download(
         if result.get("ok"):
             return result
 
-        # Tier 4: Soulseek fallback
-        print(f"\n  YouTube also failed. Trying Soulseek as final fallback...")
-        return _do_soulseek_download(
-            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
-            slsk_user=slsk_user, slsk_pass=slsk_pass,
-            proxy=proxy,)
+        # Tier 5: Soulseek retry (already failed as Tier 1, skip)
+        print(f"\n  All platforms exhausted. Download failed.")
+        return {"ok": False, "platform": "bilibili", "query": query,
+                "error": "All download tiers exhausted (Soulseek, Bilibili, YouTube)"}
 
     # ── YouTube Music (ytmusicapi search + yt-dlp download) ──
     if platform == "ytmusic":
@@ -1604,8 +1620,19 @@ def cmd_download(
             proxy=proxy,
         )
 
-    # ── YouTube ──
+    # ── YouTube (Soulseek first → YouTube) ──
     else:
+        # Tier 1: Soulseek P2P
+        soulseek_result = _do_soulseek_download(
+            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+            slsk_user=slsk_user, slsk_pass=slsk_pass,
+            proxy=proxy,
+        )
+        if soulseek_result.get("ok"):
+            return soulseek_result
+
+        # Tier 2: YouTube
+        print("\n  Soulseek failed. Falling back to YouTube...")
         result = _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
@@ -1613,12 +1640,9 @@ def cmd_download(
         if result.get("ok"):
             return result
 
-        # ── Auto-fallback: YouTube → Soulseek ──
-        print("\n  YouTube failed. Trying Soulseek as final fallback...")
-        return _do_soulseek_download(
-            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
-            slsk_user=slsk_user, slsk_pass=slsk_pass,
-            proxy=proxy,)
+        print(f"\n  All platforms exhausted. Download failed.")
+        return {"ok": False, "platform": "youtube", "query": query,
+                "error": "All download tiers exhausted (Soulseek, YouTube)"}
 
 
 
