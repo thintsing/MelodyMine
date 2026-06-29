@@ -76,8 +76,8 @@ VENV_DIR = os.path.join(HOME, ".cache", "melodymine-venv")
 #   spotdl: hard-cap major version — MelodyMine imports spotdl's internal
 #           SpotifyClient API (spotify_helper.py), which breaks across majors.
 DEP_COMPAT = {
-    "yt_dlp": {"min": "2024.0.0", "max_major": None, "tested": "2026.06.09", "severity": "warn"},
-    "spotdl": {"min": "4.2.0", "max_major": 5, "tested": "4.5.0", "severity": "error"},
+    "yt_dlp": {"min": "2026.6.9", "max_major": None, "tested": "2026.6.9", "severity": "warn"},
+    "spotdl": {"min": "4.5.0", "max_major": 5, "tested": "4.5.0", "severity": "error"},
 }
 
 
@@ -505,6 +505,54 @@ def is_socks_proxy(proxy_url):
     return bool(proxy_url) and proxy_url.startswith(
         ("socks5://", "socks5h://", "socks4://")
     )
+
+
+# ── Local proxy auto-detection ──────────────────────────────────────
+
+# Common Clash / mixed-proxy ports to probe (in priority order).
+_PROXY_PORTS = [7897, 7890, 1080]
+
+# Default proxy URL when a Clash port is detected.
+_LOCALHOST_SOCKS5 = "socks5://127.0.0.1:{port}"
+
+
+def detect_proxy():
+    """Auto-detect a running local proxy.
+
+    Resolution order:
+      1. ``ALL_PROXY`` / ``HTTP_PROXY`` / ``HTTPS_PROXY`` env vars (explicit)
+      2. Probe common Clash ports (7897, 7890, 1080) on localhost (implicit)
+
+    Returns a proxy URL string (e.g. ``socks5://127.0.0.1:7897``) or
+    empty string if no proxy is detected.
+
+    This is the canonical implementation — ``soulseek_client`` delegates
+    to it so both modules use the same detection logic.
+    """
+    import socket as _sock
+    from urllib.parse import urlparse
+
+    # 1. Environment variables (explicit configuration takes priority)
+    for var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
+        val = os.environ.get(var, "")
+        if val:
+            parsed = urlparse(val)
+            if parsed.scheme in ("http", "https") and parsed.port in _PROXY_PORTS:
+                return f"socks5://{parsed.hostname}:{parsed.port}"
+            return val
+
+    # 2. Probe common local proxy ports (implicit detection)
+    for port in _PROXY_PORTS:
+        try:
+            s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            s.settimeout(0.5)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            return _LOCALHOST_SOCKS5.format(port=port)
+        except Exception:
+            continue
+
+    return ""
 
 
 def build_spotdl_proxy_args(proxy):

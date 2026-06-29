@@ -59,12 +59,12 @@ Read `references/usage.md` only when the user needs advanced spotDL options. Rea
 2. If this is the first MelodyMine use on the machine, run `setup` first. Otherwise `download` and `check` auto-ensure dependencies — no explicit `setup` needed.
 3. Select platform:
    - Spotify URL: pass the URL to `music_helper.py download`.
-   - NetEase URL (`music.163.com/song?id=xxx`): pass the URL to `music_helper.py download` — it resolves the song name first, then downloads via Bilibili/YouTube.
-   - Query containing Chinese characters: use auto mode, which prefers Bilibili.
-   - English or non-Chinese query: use auto mode, which prefers YouTube.
-4. Add options requested by the user.
+   - NetEase URL (`music.163.com/song?id=xxx`): pass the URL to `music_helper.py download` — it resolves the song name first, then downloads via NetEase direct / Soulseek / Bilibili / YouTube.
+   - Query containing Chinese characters: use auto mode, which prefers Soulseek → Bilibili → YouTube.
+   - English or non-Chinese query: use auto mode, which prefers Soulseek → YouTube.
+4. Add options requested by the user. If the user wants a fast download without Soulseek, add `--quick`.
 5. Run the command.
-6. Report the saved path, format, and any fallback or warning.
+6. Report the saved path, format, fallback tier, and any warning.
 
 ## Core Examples
 
@@ -133,6 +133,13 @@ Force Soulseek (P2P) for hard-to-find songs or lossless FLAC:
 python scripts/music_helper.py download "Air Supply Complete" --platform soulseek
 ```
 
+Fast download — skip Soulseek, go straight to Bilibili/YouTube:
+
+```bash
+python scripts/music_helper.py download "周杰伦 稻香" --quick
+python scripts/music_helper.py download "The Weeknd Blinding Lights" --quick
+```
+
 Search Soulseek network only (no download):
 
 ```bash
@@ -159,6 +166,7 @@ python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
 - `--debug`: write a session log to `~/.melodymine/last_run.log` for troubleshooting.
 - `--slsk-user USER`: Soulseek username (or set `SLSK_USERNAME` env var).
 - `--slsk-pass PASS`: Soulseek password (or set `SLSK_PASSWORD` env var).
+- `--quick`: skip Soulseek P2P tier — go straight to Bilibili/YouTube for faster downloads.
 
 `music_helper.py meta "filepath"` supports:
 
@@ -170,12 +178,13 @@ python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
 
 | Input | Primary Path | Notes |
 | --- | --- | --- |
-| Chinese query | Bilibili | No proxy expected. If yt-dlp hits 412, falls back to Bilibili API direct (Tier 2), then YouTube. |
-| English/non-Chinese query | YouTube | Try direct first. Add proxy only after network failure. |
+| Chinese query | Soulseek → Bilibili → YouTube | Soulseek first (lossless P2P, ~30s timeout), then Bilibili, then YouTube as last resort. Use `--quick` to skip Soulseek. |
+| English/non-Chinese query | Soulseek → YouTube | Soulseek first, then YouTube. Use `--quick` to skip Soulseek. Add proxy only after network failure. |
 | Spotify URL | spotDL through `music_helper.py` | May need proxy in restricted regions. For playlist sync use `spotify_helper.py`. |
-| NetEase URL (`music.163.com/song?id=xxx`) | NetEase direct → Bilibili/YouTube | Resolves song name via NetEase API, tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube if copyrighted. |
+| NetEase URL (`music.163.com/song?id=xxx`) | NetEase direct → Soulseek → Bilibili/YouTube | Resolves song name via NetEase API, tries NetEase CDN direct download first (free songs), falls back to Soulseek, then Bilibili/YouTube. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct download | No search step — yt-dlp downloads the URL directly. YouTube may need proxy/cookies. |
-| Force Soulseek (`--platform soulseek`) | Soulseek P2P network | ⚠️ Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads the best FLAC from the first user with free slots. No proxy needed. |
+| Force Soulseek (`--platform soulseek`) | Soulseek P2P network | ⚠️ Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads the best FLAC from the first user with free slots. |
+| Force quick (`--quick`) | Bilibili or YouTube (skip Soulseek) | Skips the Soulseek P2P tier entirely. Useful when Soulseek is slow/unavailable or for faster downloads. |
 
 ## Error Handling
 
@@ -189,6 +198,7 @@ Execute the first matching row. Do not explain the table to the user — just ru
 | Spotify `KeyError: 'uri'` | Extract the track name from the Spotify URL or ask the user for it, then download by name instead: `download "Artist Song"`. Do not retry the same Spotify URL. |
 | `No results` on any platform | Try: (1) `Artist Title` format, (2) force the other platform via `--platform`, (3) broaden the query. Try up to 2 variants before reporting failure to the user. |
 | Soulseek `no results` | Ensure `SLSK_USERNAME` and `SLSK_PASSWORD` are set. Try a broader query with fewer words. |
+| Soulseek `credentials not set` / `SLSK_USERNAME not set` | Ask the user to provide Soulseek credentials (set env vars `SLSK_USERNAME` and `SLSK_PASSWORD`, or pass `--slsk-user` `--slsk-pass`). If unavailable, retry with `--quick` to skip Soulseek. |
 | Soulseek `download failed` / timeout | The remote user may be offline or have a full queue. Retry the same command — Soulseek picks a different result. |
 | Download succeeds but `metadata is wrong` | Retry once with `--no-metadata` to at least fix the filename, then offer the user a manual retry with a more exact `Artist Song` query. For already-downloaded files, use `python scripts/music_helper.py meta "/path/to/song.mp3" --query "Artist Song"`. |
 | `spotdl` not installed / install failed | Fall back to searching the song name via `download "Artist Song"` (Bilibili/YouTube path). Do not block on spotDL. |

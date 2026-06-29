@@ -7,11 +7,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/125.0.0.0 Safari/537.36"
-)
+from melodymine_common import BILI_UA as UA
 
 
 def search(query, limit=3, timeout=10):

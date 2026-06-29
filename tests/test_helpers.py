@@ -38,19 +38,21 @@ from melodymine_common import (  # noqa: E402
     proxy_to_env,
     sanitize_filename,
 )
-from music_helper import (  # noqa: E402
-    _auto_fmt_from_codec,
+from metadata import (  # noqa: E402
+    _is_accompaniment,
+    _score_metadata_candidate,
     _best_metadata_candidate,
     _clean_artist,
-    _is_accompaniment,
-    _list_audio_files,
     _norm_cn,
-    _resolve_auto_fmt,
-    _score_metadata_candidate,
     find_downloaded_file,
+    list_audio_files as _list_audio_files,
     parse_bili_title,
     parse_search_query,
     rank_bili_results,
+)
+from music_helper import (  # noqa: E402
+    _auto_fmt_from_codec,
+    _resolve_auto_fmt,
 )
 
 
@@ -716,12 +718,12 @@ class TestCheckVersionCompat(unittest.TestCase):
         self.assertEqual(msg, "")
 
     def test_above_min_but_untested_warns(self):
-        status, msg = check_version_compat("yt_dlp", "2025.07.01")
+        status, msg = check_version_compat("yt_dlp", "2026.6.10")
         self.assertEqual(status, "warn")
         self.assertIn("tested", msg)
 
     def test_below_min_for_ytdlp(self):
-        status, msg = check_version_compat("yt_dlp", "2023.12.01")
+        status, msg = check_version_compat("yt_dlp", "2024.1.1")
         self.assertEqual(status, "warn")  # severity is "warn" for yt-dlp
         self.assertIn("below minimum", msg)
 

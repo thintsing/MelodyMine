@@ -18,49 +18,8 @@ import time
 import json
 from urllib.parse import urlparse
 
-# ── Proxy helpers ──────────────────────────────────────────────────
-
-_SOCKS5_DEFAULT = "socks5://127.0.0.1:7897"
-
-# Common Clash/mixed-proxy ports to probe (in priority order).
-_PROXY_PORTS = [7897, 7890, 1080]
-
-
-def _detect_proxy():
-    """Auto-detect a running local proxy.
-
-    Resolution order:
-      1. ``ALL_PROXY`` / ``HTTP_PROXY`` / ``HTTPS_PROXY`` env vars
-      2. Probe common Clash ports (7897, 7890, 1080) on localhost
-
-    Returns a proxy URL string (e.g. ``socks5://127.0.0.1:7897``) or
-    empty string if no proxy is detected.
-    """
-    import socket as _sock
-    from urllib.parse import urlparse
-
-    # 1. Probe common local proxy ports first (prefer SOCKS5)
-    for port in _PROXY_PORTS:
-        try:
-            s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
-            s.settimeout(0.5)
-            s.connect(("127.0.0.1", port))
-            s.close()
-            return f"socks5://127.0.0.1:{port}"
-        except Exception:
-            continue
-
-    # 2. Environment variables (fallback)
-    for var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
-        val = os.environ.get(var, "")
-        if val:
-            # If env var points to http:// on a known Clash mixed-port, upgrade to SOCKS5
-            parsed = urlparse(val)
-            if parsed.scheme in ("http", "https") and parsed.port in _PROXY_PORTS:
-                return f"socks5://{parsed.hostname}:{parsed.port}"
-            return val
-
-    return ""
+# Proxy auto-detection is now unified in melodymine_common.
+from melodymine_common import detect_proxy as _detect_proxy
 
 
 def _build_proxied_socket(dest_host, dest_port, proxy_url, timeout=30):

@@ -10,11 +10,8 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/125.0.0.0 Safari/537.36"
-)
+from melodymine_common import BILI_UA as UA
+
 TABS = [46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13]
 
 # Cache WBI keys for 5 minutes to avoid repeated nav API calls

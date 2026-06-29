@@ -22,7 +22,6 @@ import re
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from melodymine_common import (
@@ -52,8 +51,7 @@ from melodymine_common import (
 )
 
 import bili_client
-import cover_client
-import mbrainz_client
+import metadata as _metadata_mod
 import netease_client
 import soulseek_client
 import ytmusic_client
@@ -290,63 +288,12 @@ def _print_plan(plan):
 
 # ─── MusicBrainz Metadata Lookup (free, no auth, excellent for English songs) ─────
 
-# Chinese text normalization for robust artist/title comparison
-_CHINESE_NORM_MAP = str.maketrans({
-    '倫': '伦', '傑': '杰', '樂': '乐', '國': '国', '雲': '云',
-    '會': '会', '個': '个', '時': '时', '間': '间', '說': '说',
-    '話': '话', '愛': '爱', '點': '点', '萬': '万', '龍': '龙',
-    '聲': '声', '體': '体', '學': '学', '問': '问', '車': '车',
-    '門': '门', '開': '开', '關': '关', '風': '风', '飛': '飞',
-    '馬': '马', '魚': '鱼', '鳥': '鸟', '與': '与', '從': '从',
-    '來': '来', '東': '东', '發': '发', '電': '电', '燈': '灯',
-    '當': '当', '後': '后', '書': '书', '長': '长', '見': '见',
-    '貝': '贝', '麵': '面',
-})
-
-
-def _norm_cn(s):
-    """Normalize Chinese text: map traditional → simplified for matching."""
-    return s.translate(_CHINESE_NORM_MAP) if s else s
-
-
-def _clean_artist(name):
-    """Clean up artist name from API (remove trailing dashes, periods, etc.)."""
-    if not name:
-        return ""
-    # Take first artist if comma-separated
-    name = name.split(",")[0].split("，")[0]
-    # Strip trailing punctuation
-    name = name.rstrip("-－—–.。，,·・")
-    return name.strip()
-
-
-# English articles that should be grouped with the following token as the
-# artist name, e.g. "The Weeknd Blinding Lights" -> ("The Weeknd", "Blinding Lights").
-_ARTICLES = {"the", "a", "an"}
-
-
-def parse_search_query(query):
-    """
-    Parse a user search query to extract artist and title.
-    "周杰伦 稻香"                -> ("周杰伦", "稻香")
-    "The Weeknd Blinding Lights" -> ("The Weeknd", "Blinding Lights")
-    "稻香"                        -> (None, "稻香")
-
-    For Chinese: first token = artist, rest = title
-    For English: if the first token is an article (The/A/An), group it with the
-    next token as the artist name.
-    """
-    parts = query.strip().split()
-    if len(parts) >= 2:
-        artist = parts[0]
-        title = " ".join(parts[1:])
-        # Group a leading English article with the next token so band names like
-        # "The Weeknd", "The Beatles", "A Tribe Called Quest" stay intact.
-        if artist.lower() in _ARTICLES and len(parts) >= 3:
-            artist = f"{parts[0]} {parts[1]}"
-            title = " ".join(parts[2:])
-        return artist, title
-    return None, query.strip()
+# Re-export from metadata module
+parse_search_query = _metadata_mod.parse_search_query
+parse_bili_title = _metadata_mod.parse_bili_title
+rank_bili_results = _metadata_mod.rank_bili_results
+_is_accompaniment = _metadata_mod._is_accompaniment
+_clean_artist = _metadata_mod._clean_artist
 
 def resolve_netease_url(url):
     """Resolve a NetEase song URL to an 'Artist Title' search query.
@@ -368,511 +315,50 @@ def resolve_netease_url(url):
     return None
 
 
-# ─── Bilibili result ranking (deprioritise accompaniment/instrumental) ───
-
-# Keywords that indicate a search result is an accompaniment, instrumental, or
-# karaoke version rather than the original song with vocals.
-_ACCOMPANIMENT_RE = re.compile(
-    r"伴奏|纯音乐|卡拉OK|卡拉ok|karaoke|instrumental|backing\s*track|"
-    r"accompaniment|off\s*vocal|无人声|消音|静音版?",
-    re.IGNORECASE,
-)
+# Re-export from metadata module (backward-compatible aliases)
+_AUDIO_EXTS = _metadata_mod._AUDIO_EXTS
+_list_audio_files = _metadata_mod.list_audio_files
+find_downloaded_file = _metadata_mod.find_downloaded_file
 
 
-def _is_accompaniment(title):
-    """Return True if a Bilibili video title looks like an accompaniment /
-    instrumental / karaoke version (no lead vocals)."""
-    return bool(_ACCOMPANIMENT_RE.search(title or ""))
+_read_audio_tags = _metadata_mod.read_audio_tags
+set_metadata = _metadata_mod.set_metadata
 
 
-def rank_bili_results(results):
-    """Reorder Bilibili search results so non-accompaniment entries come first.
+# Re-export from metadata module
+itunes_search = _metadata_mod.itunes_search
+_score_metadata_candidate = _metadata_mod._score_metadata_candidate
+_best_metadata_candidate = _metadata_mod._best_metadata_candidate
+enhance_metadata = _metadata_mod.enhance_metadata
+verify_audio_file = _metadata_mod.verify_audio_file
 
-    Within each group (vocal / accompaniment) results keep their original
-    API order, which already reflects Bilibili relevance. This means the
-    default --index 1 picks the most relevant *vocal* version instead of a
-    backing track that happened to rank highest.
 
-    Returns a new list; does not mutate the input. Prints nothing.
+def _finalize_download_result(result, output):
+    """Post-download: verify file integrity and enrich result with audio info.
+
+    Called on every successful download path in ``cmd_download`` so all
+    platforms get the same verification treatment.
     """
-    vocal = [r for r in results if not _is_accompaniment(r.get("title", ""))]
-    accomp = [r for r in results if _is_accompaniment(r.get("title", ""))]
-    return vocal + accomp
+    if not result.get("ok"):
+        return result
 
-
-# Noise patterns to strip from Bilibili titles (pre-compiled for performance).
-_NOISE_PATTERNS = [re.compile(p) for p in [
-    r"完整版", r"无损音质", r"无损", r"高清", r"超清", r"高品质",
-    r"官方MV", r"官方", r"\bMV\b", r"\bOfficial\b", r"\bHD\b",
-    r"\bLyrics?\b", r"歌词版?", r"歌词", r"现场版?", r"\bLive\b",
-    r"纯音乐", r"伴奏", r"翻唱", r"字幕版?", r"音频版?", r"音频",
-    r"\(.*?\)", r"（.*?）", r"【.*?】", r"［.*?］",
-    r"\d{4}", r"｜.*", r"\|.*",
-]]
-
-
-def parse_bili_title(title):
-    """
-    Extract artist and song name from a Bilibili video title.
-
-    Patterns:
-    - "周杰伦《稻香》完整版"     -> artist=周杰伦, title=稻香
-    - "周杰伦 - 稻香 MV"         -> artist=周杰伦, title=稻香
-    - "【周杰伦】稻香 官方MV"     -> artist=周杰伦, title=稻香
-
-    Returns (artist, song_name) or (None, None).
-    """
-    artist = None
-    song_name = None
-
-    # Pattern 1: artist《title》
-    m = re.match(r"^(.+?)《(.+?)》", title)
-    if m:
-        artist = m.group(1).strip()
-        song_name = m.group(2).strip()
-
-    # Pattern 2: 【artist】title or ［artist］title
-    if not artist:
-        m = re.match(r"^[【［](.+?)[】］]\s*(.+)", title)
-        if m:
-            artist = m.group(1).strip()
-            song_name = m.group(2).strip()
-
-    # Pattern 3: artist - title / artist — title / artist – title
-    if not artist:
-        m = re.match(r"^(.+?)\s*[-－—–]\s*(.+)", title)
-        if m:
-            artist = m.group(1).strip()
-            song_name = m.group(2).strip()
-
-    # Clean noise
-    if song_name:
-        for p in _NOISE_PATTERNS:
-            song_name = re.sub(p, "", song_name)
-        song_name = song_name.strip(" -｜|\t")
-
-    if artist:
-        for p in _NOISE_PATTERNS:
-            artist = re.sub(p, "", artist)
-        artist = artist.strip(" -｜|\t")
-
-    return artist, song_name
-
-
-_AUDIO_EXTS = {".mp3", ".flac", ".m4a", ".opus", ".wav", ".vorbis", ".ogg", ".webm"}
-
-
-def _list_audio_files(output_dir):
-    """Return a set of absolute path strings for audio files currently in output_dir.
-
-    Used to snapshot the directory *before* a download so that
-    find_downloaded_file can identify only the newly-created file(s)
-    afterward, ignoring pre-existing audio.
-    """
-    p = Path(output_dir)
-    if not p.exists():
-        return set()
-    return {str(f) for f in p.iterdir() if f.is_file() and f.suffix.lower() in _AUDIO_EXTS}
-
-
-def find_downloaded_file(output_dir, before=None):
-    """Find the most recently downloaded audio file in output_dir.
-
-    yt-dlp sets each file's mtime to the source upload date (not the download
-    time), so sorting by mtime can pick a pre-existing file whose upload date
-    is newer than the just-downloaded one — and metadata would then be written
-    to the wrong file. To avoid this, pass ``before``: a set of file paths
-    captured by _list_audio_files *before* the download; only files not in
-    that snapshot are considered. Recency falls back to ctime (creation/change
-    time), which better reflects the actual download time than mtime.
-    """
-    output_path = Path(output_dir)
-    if not output_path.exists():
-        return None
-    files = [f for f in output_path.iterdir()
-             if f.is_file() and f.suffix.lower() in _AUDIO_EXTS]
-    if before:
-        files = [f for f in files if str(f) not in before]
-    if not files:
-        return None
-    files.sort(key=lambda f: f.stat().st_ctime, reverse=True)
-    return str(files[0])
-
-
-def _read_audio_tags(filepath):
-    """Read artist and title tags from an audio file via ffprobe.
-
-    Returns (artist, title) tuple. Each is None if missing or unreadable.
-    Never raises — returns (None, None) on any failure.
-    """
-    ffmpeg_exe = find_ffmpeg()
-    if not ffmpeg_exe:
-        return None, None
-    ffprobe_exe = os.path.join(os.path.dirname(ffmpeg_exe), "ffprobe")
-    if os.name == "nt":
-        ffprobe_exe += ".exe"
-    if not os.path.isfile(ffprobe_exe):
-        # imageio-ffmpeg bundles ffprobe alongside ffmpeg; fall back to PATH
-        ffprobe_exe = "ffprobe"
-
-    try:
-        result = subprocess.run(
-            [
-                ffprobe_exe, "-v", "error",
-                "-show_entries", "format_tags=artist,title,ARTIST,TITLE",
-                "-of", "csv=p=0",
-                filepath,
-            ],
-            capture_output=True, text=True, timeout=10,
-            encoding="utf-8", errors="replace",
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None, None
-
-        # ffprobe CSV output is in order of requested keys:
-        # format_tags=artist,title,ARTIST,TITLE → 4 comma-separated values
-        fields = result.stdout.strip().split(",")
-        # Parse by position: artist, title, ARTIST, TITLE
-        artist = title = None
-        if len(fields) >= 4:
-            artist = fields[2] or fields[0] or None  # prefer ARTIST
-            title = fields[3] or fields[1] or None    # prefer TITLE
-        elif len(fields) >= 2:
-            artist = fields[0] or None
-            title = fields[1] or None
-        else:
-            return None, None
-
-        artist = artist.strip() if artist else None
-        title = title.strip() if title else None
-        return artist, title
-    except Exception:
-        return None, None
-
-
-def set_metadata(filepath, title=None, artist=None, album=None, cover_path=None):
-    """
-    Use ffmpeg to set ID3 metadata on an audio file.
-    Preserves existing streams (including embedded cover art).
-    Returns True on success.
-    """
-    ffmpeg_exe = find_ffmpeg()
-    if not ffmpeg_exe:
-        print("  [!] FFmpeg not found (tried system + imageio-ffmpeg), skipping metadata")
-        return False
-
-    # Temp file must keep the same extension so ffmpeg recognises the format
-    base, ext = os.path.splitext(filepath)
-    tmp_path = base + ".meta_tmp" + ext
-    if os.path.exists(tmp_path):
-        os.remove(tmp_path)
-
-    cmd = [ffmpeg_exe, "-y", "-i", filepath]
-    has_cover = cover_path and os.path.isfile(cover_path)
-    if has_cover:
-        cmd.extend(["-i", cover_path])
-
-    # Map all original streams; add cover as additional stream
-    cmd.extend(["-map", "0"])
-    if has_cover:
-        cmd.extend(["-map", "1"])
-    cmd.extend(["-c", "copy"])
-    if has_cover:
-        cmd.extend(["-disposition:v:0", "attached_pic"])
-    cmd.extend(["-id3v2_version", "3"])
-
-    if title:
-        cmd.extend(["-metadata", f"title={title}"])
-    if artist:
-        cmd.extend(["-metadata", f"artist={artist}"])
-    if album:
-        cmd.extend(["-metadata", f"album={album}"])
-
-    cmd.append(tmp_path)
-
-    try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30,
-            encoding="utf-8", errors="replace",
-        )
-        if result.returncode == 0 and os.path.isfile(tmp_path):
-            os.remove(filepath)
-            os.rename(tmp_path, filepath)
-            return True
-        if os.path.isfile(tmp_path):
-            os.remove(tmp_path)
-        return False
-    except Exception:
-        if os.path.isfile(tmp_path):
-            os.remove(tmp_path)
-        return False
-
-
-def itunes_search(query, limit=5):
-    """
-    Search iTunes Search API (free, no auth).
-    Returns list of dicts with keys: artist, title, album, cover, date, genre
-    or empty list on failure.
-    """
-    try:
-        import urllib.request, urllib.parse, json
-        url = "https://itunes.apple.com/search?" + urllib.parse.urlencode({
-            "term": query, "media": "music", "limit": str(limit)
-        })
-        req = urllib.request.Request(url)
-        req.add_header("User-Agent", "Mozilla/5.0")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except Exception:
-        return []
-
-    results = []
-    for r in data.get("results", []):
-        artwork = r.get("artworkUrl100", "")
-        # Upgrade cover resolution: 100x100 -> 600x600
-        if artwork:
-            artwork = artwork.replace("100x100bb", "600x600bb")
-        results.append({
-            "artist": r.get("artistName", "").strip(),
-            "title": r.get("trackName", "").strip(),
-            "album": r.get("collectionName", "").strip(),
-            "cover": artwork,
-            "date": r.get("releaseDate", "")[:10],
-            "genre": r.get("primaryGenreName", ""),
-            "duration_ms": r.get("trackTimeMillis", 0),
-        })
-    return results
-
-
-# ─── Metadata scoring (shared by enhance_metadata, testable independently) ──
-
-
-def _score_metadata_candidate(r, artist, title, *, collaboration_aware=False, bonus_fields=False):
-    """Score a single metadata result (from MusicBrainz / NetEase / iTunes)
-    against a parsed artist/title pair.
-
-    - collaboration_aware: for NetEase, which returns comma-joined multi-artist
-      strings — reduces the exact-artist score and uses the raw (uncleaned)
-      artist for the contains check.
-    - bonus_fields: for iTunes, adds small bonuses for having cover art and
-      an album name.
-    """
-    # Guard: empty query artist/title can never produce a meaningful match.
-    # (Python's ``"" in "anything"`` is always True — a phantom match.)
-    if not artist or not title:
-        return 0
-
-    r_artist_raw = r.get("artist") or ""
-    if collaboration_aware:
-        r_artist = _clean_artist(r_artist_raw)
-    else:
-        r_artist = r_artist_raw.strip()
-    r_title = (r.get("title") or "").strip()
-    is_collab = collaboration_aware and ("," in r_artist_raw or "，" in r_artist_raw)
-
-    score = 0
-    if _norm_cn(r_artist) == _norm_cn(artist):
-        score += 5 if is_collab else 20
-    elif collaboration_aware:
-        # NetEase path: match against the raw (comma-joined) artist string,
-        # exactly as the original _score_ne did — never the +8 branch.
-        if _norm_cn(artist) in _norm_cn(r_artist_raw):
-            score += 3
-    elif _norm_cn(artist) in _norm_cn(r_artist):
-        score += 8
-
-    if _norm_cn(r_title) == _norm_cn(title):
-        score += 5
-    elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
-        score += 2
-
-    if bonus_fields:
-        cover = r.get("cover") or r.get("pic_url")
-        if cover:
-            score += 3  # has cover art
-        if r.get("album"):
-            score += 2  # has album name
-    return score
-
-
-def _best_metadata_candidate(results, artist, title, **kwargs):
-    """Return ``(best_score, best_data)`` across a list of metadata results
-    using ``_score_metadata_candidate``.  Returns ``(-1, None)`` when the
-    list is empty.
-
-    Extra keyword arguments are forwarded to ``_score_metadata_candidate``
-    so callers can enable ``collaboration_aware`` or ``bonus_fields``.
-    """
-    best_score, best_data = -1, None
-    for r in results:
-        score = _score_metadata_candidate(r, artist, title, **kwargs)
-        if score > best_score:
-            best_score, best_data = score, r
-    return best_score, best_data
-
-
-def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True, filepath=None, before_snapshot=None):
-    """
-    Post-download metadata enhancement (multi-source strategy).
-
-    Layer 1: Parse user's search query
-    Layer 2: MusicBrainz + NetEase + iTunes queried concurrently, each scored
-    Layer 3: Parse Bilibili video title (fallback for artist/title only)
-    The highest-scoring source wins; ties broken by cover availability.
-    When ``embed_thumbnail`` is False, cover art is neither downloaded nor
-    embedded (respects --no-thumbnail).
-    Never raises — metadata enhancement is best-effort.
-
-    If ``filepath`` is provided, it is used directly; otherwise the most
-    recently created audio file in ``output_dir`` is enhanced. Pass
-    ``before_snapshot`` (from _list_audio_files, captured before the
-    download) so the newly-downloaded file is identified correctly even
-    when the output dir already holds older audio.
-    """
-    if filepath is None:
-        filepath = find_downloaded_file(output_dir, before=before_snapshot)
+    # Find the latest downloaded file
+    filepath = _metadata_mod.find_downloaded_file(output)
     if not filepath:
-        print("  [!] Could not find downloaded file for metadata")
-        return
-    if not os.path.isfile(filepath):
-        print(f"  [!] File not found: {filepath}")
-        return
+        return result
 
-    # ── Skip if file already has meaningful metadata ──
-    existing_artist, existing_title = _read_audio_tags(filepath)
-    if existing_artist and existing_title:
-        print(f"\n  File already tagged: {existing_artist} - {existing_title}")
-        print(f"  Skipping metadata enhancement.")
-        return
+    verify = verify_audio_file(filepath)
+    if verify.get("ok"):
+        result["file"] = verify.get("path", filepath)
+        result["size_mb"] = verify.get("size_mb")
+        result["duration"] = verify.get("duration_str")
+        result["codec"] = verify.get("codec")
+        if verify.get("duration_str"):
+            print(f"  Verified: {verify['size_mb']} MB, {verify['duration_str']}")
+    elif verify.get("error"):
+        print(f"  [!] Integrity check: {verify['error']}")
 
-    print(f"\n[3/3] Enhancing metadata...")
-
-    # ── Layer 1: Parse search query ──
-    artist, title = parse_search_query(search_query)
-    if artist and title:
-        print(f"  From search query: artist={artist}, title={title}")
-    elif bili_title:
-        artist, title = parse_bili_title(bili_title)
-        if artist and title:
-            print(f"  From Bilibili title: artist={artist}, title={title}")
-
-    if not artist or not title:
-        print(f"  [!] Could not determine artist/title, keeping original tags")
-        return
-
-    # ── Layer 2: Multi-source lookup (concurrent) ──
-    # MusicBrainz + NetEase + iTunes run in parallel to cut wait time.
-    print(f"  Looking up album info (MusicBrainz + NetEase + iTunes in parallel)...")
-
-    # Fire all three queries concurrently; each returns its raw results.
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        fut_mb = pool.submit(mbrainz_client.lookup, search_query, 5)
-        fut_ne = pool.submit(netease_client.search, search_query, 10)
-        fut_it = pool.submit(itunes_search, search_query, 10)
-        # Wait for all; exceptions in a source just mean empty results for it.
-        try:
-            mb_results = fut_mb.result() or []
-        except Exception:
-            mb_results = []
-        try:
-            ne_results = fut_ne.result() or []
-        except Exception:
-            ne_results = []
-        try:
-            it_results = fut_it.result() or []
-        except Exception:
-            it_results = []
-
-    # Score each source's results (pure CPU, microseconds — no need to parallelize).
-    best_mb_score, mb_data = _best_metadata_candidate(mb_results, artist, title)
-    best_ne_score, ne_data = _best_metadata_candidate(ne_results, artist, title, collaboration_aware=True)
-    best_it_score, it_data = _best_metadata_candidate(it_results, artist, title, bonus_fields=True)
-
-    if mb_data:
-        print(f"    Best: {mb_data['artist']} - {mb_data['title']} [MusicBrainz (score={best_mb_score})]")
-    else:
-        print(f"    No results from MusicBrainz")
-    if ne_data:
-        print(f"    Best: {_clean_artist(ne_data['artist'])} - {ne_data['title']} [NetEase (score={best_ne_score})]")
-    else:
-        print(f"    No results from NetEase")
-    if it_data:
-        print(f"    Best: {it_data['artist']} - {it_data['title']} [iTunes (score={best_it_score})]")
-    else:
-        print(f"    No results from iTunes")
-
-    # Pick the winner
-    # Collect all candidates with (source_key, score, data)
-    candidates = []
-    if mb_data:
-        candidates.append(("MusicBrainz", best_mb_score, mb_data))
-    if ne_data:
-        candidates.append(("NetEase", best_ne_score, ne_data))
-    if it_data:
-        candidates.append(("iTunes", best_it_score, it_data))
-
-    if not candidates:
-        album, pic_url, source = "", "", "parsed query"
-    else:
-        # Sort by score descending, then by cover availability descending
-        def sort_key(item):
-            src, score, data = item
-            has_cover = 1 if (src == "iTunes" and data.get("cover")) or data.get("pic_url") else 0
-            return (score, has_cover)
-
-        candidates.sort(key=sort_key, reverse=True)
-        source, best_score, best_data = candidates[0]
-
-        if source == "MusicBrainz":
-            pic_url = best_data.get("pic_url", "")
-            album = best_data.get("album", "").strip()
-        elif source == "NetEase":
-            pic_url = best_data.get("pic_url", "")
-            album = best_data.get("album", "").strip()
-        else:  # iTunes
-            pic_url = best_data.get("cover", "")
-            album = best_data.get("album", "").strip()
-
-    if album:
-        print(f"  Album: {album} (from {source})")
-    if pic_url:
-        print(f"  Cover: available (from {source})")
-    else:
-        print(f"  Cover: not available")
-
-    # ── Download album cover ──
-    cover_path = None
-    if embed_thumbnail and pic_url:
-        cover_path = cover_client.download(pic_url)
-        if cover_path:
-            print(f"  Downloaded album cover")
-    elif not embed_thumbnail:
-        print(f"  Cover: skipped (--no-thumbnail)")
-
-    # ── Set ID3 tags with ffmpeg ──
-    ok = set_metadata(filepath, title=title, artist=artist, album=album, cover_path=cover_path)
-    if ok:
-        print(f"  [OK] Metadata embedded: {artist} - {title}" + (f" | {album}" if album else ""))
-    else:
-        print(f"  [!] Failed to set metadata (ffmpeg error)")
-
-    # ── Rename file ──
-    new_base = sanitize_filename(f"{artist} - {title}")
-    if new_base:
-        ext = os.path.splitext(filepath)[1]
-        new_path = os.path.join(os.path.dirname(filepath), new_base + ext)
-        if new_path != filepath and not os.path.exists(new_path):
-            try:
-                os.rename(filepath, new_path)
-                print(f"  Renamed: {os.path.basename(new_path)}")
-            except Exception:
-                pass
-
-    if cover_path and os.path.isfile(cover_path):
-        try:
-            os.remove(cover_path)
-        except Exception:
-            pass
+    return result
 
 
 # ─── yt-dlp Download ─────────────────────────────────────────────────────
@@ -1196,7 +682,7 @@ def cmd_setup():
     if sp:
         print(f"    [OK] Spotify   (via spotDL v{sp})")
     else:
-        print("    [--] Spotify   (optional: pip install 'spotdl>=4.2.0,<5.0.0')")
+        print("    [--] Spotify   (optional: pip install 'spotdl>=4.5.0,<5.0.0')")
     print()
     return True
 
@@ -1261,6 +747,23 @@ def cmd_check():
     print("    - Bilibili  (Chinese songs, no proxy needed)")
     print("    - YouTube   (English songs, proxy optional — needed in China)")
     print("    - Spotify URL  (optional, via spotDL)")
+
+    # ── Soulseek credentials check ──
+    slsk_user = os.environ.get("SLSK_USERNAME", "")
+    slsk_pass = os.environ.get("SLSK_PASSWORD", "")
+    if slsk_user and slsk_pass:
+        print(f"\n  Soulseek P2P: [OK] configured (user: {slsk_user})")
+        print(f"    Downloads prefer Soulseek first for best quality, then fall back to Bilibili/YouTube.")
+    else:
+        if not slsk_user and not slsk_pass:
+            tip = "Set SLSK_USERNAME and SLSK_PASSWORD env vars"
+        elif not slsk_user:
+            tip = "Set SLSK_USERNAME env var (SLSK_PASSWORD is set)"
+        else:
+            tip = "Set SLSK_PASSWORD env var (SLSK_USERNAME is set)"
+        print(f"\n  Soulseek P2P: [--] not configured")
+        print(f"    {tip} to enable P2P downloads.")
+        print(f"    Without credentials, downloads skip Soulseek automatically.")
 
     # ── External API health probe ──
     print("\n  External API reachability:")
@@ -1465,9 +968,14 @@ def cmd_download(
     query, platform="auto", fmt="flac", output=None,
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
     no_metadata=False, cookies=None, dry_run=False, json_output=False,
-    debug=False, slsk_user=None, slsk_pass=None,
+    debug=False, slsk_user=None, slsk_pass=None, quick=False,
 ):
-    """Download a song with automatic platform selection and fallback."""
+    """Download a song with automatic platform selection and fallback.
+
+    When ``quick`` is True, Soulseek P2P is skipped entirely — the
+    downloader goes straight to Bilibili/YouTube.  Useful for faster
+    downloads when Soulseek is known to be slow or unavailable.
+    """
     if debug:
         set_debug(True)
         debug_log(f"cmd_download: query={query!r} platform={platform} fmt={fmt} proxy={proxy}")
@@ -1551,23 +1059,27 @@ def cmd_download(
     # ── Bilibili: Soulseek first → Bilibili → YouTube ──
     if platform == "bilibili":
         # Tier 1: Soulseek P2P (best quality, often lossless)
-        print("=" * 60)
-        print(f"  Platform : Soulseek (P2P) — primary")
-        print(f"  Query    : {query}")
-        print(f"  Format   : {fmt}")
-        print(f"  Output   : {output}")
-        print("=" * 60)
-        print()
-        soulseek_result = _do_soulseek_download(
-            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
-            slsk_user=slsk_user, slsk_pass=slsk_pass,
-            proxy=proxy,
-        )
-        if soulseek_result.get("ok"):
-            return soulseek_result
+        if not quick:
+            print("=" * 60)
+            print(f"  Platform : Soulseek (P2P) — primary")
+            print(f"  Query    : {query}")
+            print(f"  Format   : {fmt}")
+            print(f"  Output   : {output}")
+            print("=" * 60)
+            print()
+            soulseek_result = _do_soulseek_download(
+                query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+                slsk_user=slsk_user, slsk_pass=slsk_pass,
+                proxy=proxy,
+            )
+            if soulseek_result.get("ok"):
+                return soulseek_result
+            print(f"\n  Soulseek failed. Falling back to Bilibili...")
+        else:
+            print("  [--quick] Soulseek skipped, going straight to Bilibili...")
+            soulseek_result = {"ok": False}
 
         # Tier 2: Bilibili wbi search + yt-dlp download
-        print(f"\n  Soulseek failed. Falling back to Bilibili...")
         print("=" * 60)
         print(f"  Platform : Bilibili (direct, no proxy)")
         print(f"  Query    : {query}")
@@ -1681,16 +1193,20 @@ def cmd_download(
     # ── YouTube (Soulseek first → YouTube) ──
     else:
         # Tier 1: Soulseek P2P
-        soulseek_result = _do_soulseek_download(
-            query, output, fmt, bitrate, embed_thumbnail, no_metadata,
-            slsk_user=slsk_user, slsk_pass=slsk_pass,
-            proxy=proxy,
-        )
-        if soulseek_result.get("ok"):
-            return soulseek_result
+        if not quick:
+            soulseek_result = _do_soulseek_download(
+                query, output, fmt, bitrate, embed_thumbnail, no_metadata,
+                slsk_user=slsk_user, slsk_pass=slsk_pass,
+                proxy=proxy,
+            )
+            if soulseek_result.get("ok"):
+                return soulseek_result
+            print("\n  Soulseek failed. Falling back to YouTube...")
+        else:
+            print("  [--quick] Soulseek skipped, going straight to YouTube...")
+            soulseek_result = {"ok": False}
 
         # Tier 2: YouTube
-        print("\n  Soulseek failed. Falling back to YouTube...")
         result = _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
@@ -2106,7 +1622,7 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
     sp_ver = has_spotdl(python)
     if not sp_ver:
         print("  spotDL not installed, auto-installing...")
-        pip_install(python, ["spotdl>=4.2.0,<5.0.0"])
+        pip_install(python, ["spotdl>=4.5.0,<5.0.0"])
         sp_ver = has_spotdl(python)
     if not sp_ver:
         print("ERROR: spotDL installation failed.")
@@ -2227,6 +1743,8 @@ Examples:
                       help="Write a session log to ~/.melodymine/last_run.log for troubleshooting")
     p_dl.add_argument("--slsk-user", default=None, help="Soulseek username (or set SLSK_USERNAME env)")
     p_dl.add_argument("--slsk-pass", default=None, help="Soulseek password (or set SLSK_PASSWORD env)")
+    p_dl.add_argument("--quick", action="store_true",
+                      help="Skip Soulseek P2P tier — go straight to Bilibili/YouTube for faster downloads")
 
     args = parser.parse_args()
 
@@ -2262,7 +1780,12 @@ Examples:
             debug=args.debug,
             slsk_user=args.slsk_user,
             slsk_pass=args.slsk_pass,
+            quick=args.quick,
         )
+        # Post-download: verify file integrity for successful downloads
+        if not args.dry_run and isinstance(result, dict) and result.get("ok"):
+            output_dir = args.output or DEFAULT_OUTPUT
+            result = _finalize_download_result(result, output_dir)
         # Emit JSON for non-dry-run successful downloads (dry-run already emitted).
         if args.json and not args.dry_run and isinstance(result, dict):
             _emit_json(result)

@@ -48,8 +48,8 @@ from melodymine_common import (
     run_streaming,
 )
 
-# Metadata enhancement is shared with the main helper.
-from music_helper import enhance_metadata
+# Metadata enhancement is shared from the metadata module.
+from metadata import enhance_metadata
 
 
 # --- Configuration ---
@@ -61,7 +61,7 @@ DEFAULT_PROXY = None
 # spotdl is hard-capped to major 4 — MelodyMine imports spotdl's internal
 # SpotifyClient API (see spotify_search), which breaks across major versions.
 # Keep this in sync with requirements.txt and DEP_COMPAT in melodymine_common.py.
-SPOTDL_PACKAGES = ["spotdl>=4.2.0,<5.0.0", "PySocks"]
+SPOTDL_PACKAGES = ["spotdl>=4.5.0,<5.0.0", "PySocks"]
 
 
 def _get_python():
@@ -240,7 +240,8 @@ def verify_downloads(output_dir):
     """Check output directory for downloaded files."""
     print(f"\n[VERIFY] Checking: {output_dir}")
 
-    audio_exts = (".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav")
+    from metadata import _AUDIO_EXTS
+    audio_exts = tuple(sorted(_AUDIO_EXTS))
     found_files = []
     bad_files = []
 
