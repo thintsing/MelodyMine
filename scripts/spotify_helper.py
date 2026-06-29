@@ -42,6 +42,7 @@ from melodymine_common import (
     find_ffmpeg,
     find_python,
     is_socks_proxy,
+    make_subprocess_env,
     pip_install,
     proxy_to_env,
     run_streaming,
@@ -82,10 +83,9 @@ def spotify_search(query, proxy=None):
     python_exe = _get_python()
 
     # Build environment with proxy
-    env = os.environ.copy()
+    env = make_subprocess_env()
     if proxy:
         env.update(proxy_to_env(proxy))
-    env["PYTHONIOENCODING"] = "utf-8"
 
     search_script = r"""
 import sys, json
@@ -120,20 +120,19 @@ except Exception as e:
     )
 
     if result.returncode != 0:
-        print(f"[SEARCH] Direct API search failed, using fallback...")
-        return [{"name": query, "artist": "", "album": "",
-                 "url": query, "duration": 0, "id": ""}]
+        stderr = (result.stderr or "").strip()
+        print(f"[SEARCH] Direct API search failed: {stderr[:200] or 'unknown error'}")
+        return []
 
     try:
         data = json.loads(result.stdout.strip())
         if isinstance(data, dict) and "error" in data:
             print(f"[SEARCH] Error: {data['error']}")
-            return [{"name": query, "artist": "", "album": "",
-                     "url": query, "duration": 0, "id": ""}]
+            return []
         return data
     except json.JSONDecodeError:
-        return [{"name": query, "artist": "", "album": "",
-                 "url": query, "duration": 0, "id": ""}]
+        print(f"[SEARCH] Invalid JSON response from Spotify API")
+        return []
 
 
 # --- Download execution ---
@@ -205,10 +204,9 @@ def run_spotdl(operation, queries, extra_args):
             cmd.append(flag)
 
     # Set environment variables for proxy (for Spotify API calls)
-    env = os.environ.copy()
+    env = make_subprocess_env()
     if proxy:
         env.update(proxy_to_env(proxy))
-    env["PYTHONIOENCODING"] = "utf-8"
 
     print(f"\n[RUN] {' '.join(cmd)}")
     if proxy:

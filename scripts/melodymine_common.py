@@ -283,7 +283,7 @@ def check_module(python, module_name, timeout=10):
         result = subprocess.run(
             [python, "-c", f"import {module_name}; print({version_expr})"],
             capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace",
+            env=make_subprocess_env(), encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             return result.stdout.strip()
@@ -308,7 +308,7 @@ def pip_install(python, packages, timeout=180):
         result = subprocess.run(
             base_cmd + packages,
             capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace",
+            env=make_subprocess_env(), encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             return True
@@ -322,7 +322,7 @@ def pip_install(python, packages, timeout=180):
         result = subprocess.run(
             base_cmd + ["--user"] + packages,
             capture_output=True, text=True, timeout=timeout,
-            encoding="utf-8", errors="replace",
+            env=make_subprocess_env(), encoding="utf-8", errors="replace",
         )
         if result.returncode == 0:
             return True
@@ -348,7 +348,7 @@ def _create_venv(base_python, install_packages, verify_module="yt_dlp", timeout=
             result = subprocess.run(
                 [base_python, "-m", "venv", VENV_DIR],
                 capture_output=True, text=True, timeout=timeout,
-                encoding="utf-8", errors="replace",
+                env=make_subprocess_env(), encoding="utf-8", errors="replace",
             )
             if result.returncode != 0:
                 print(f"  [!] venv creation failed: {(result.stderr or '')[:200]}")
@@ -410,7 +410,7 @@ def find_python(required_module, install_packages):
         pip_check = subprocess.run(
             [py, "-m", "pip", "--version"],
             capture_output=True, text=True, timeout=10,
-            encoding="utf-8", errors="replace",
+            env=make_subprocess_env(), encoding="utf-8", errors="replace",
         )
         if pip_check.returncode != 0:
             continue
@@ -430,7 +430,7 @@ def find_python(required_module, install_packages):
             continue
         ver_check = subprocess.run(
             [py, "--version"], capture_output=True, text=True, timeout=5,
-            encoding="utf-8", errors="replace",
+            env=make_subprocess_env(), encoding="utf-8", errors="replace",
         )
         if ver_check.returncode == 0:
             print(f"  System Python is externally-managed, creating isolated venv...")
@@ -480,7 +480,7 @@ def find_ffmpeg(python=None):
             result = subprocess.run(
                 [python, "-c", "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())"],
                 capture_output=True, text=True, timeout=15,
-                encoding="utf-8", errors="replace",
+                env=make_subprocess_env(), encoding="utf-8", errors="replace",
             )
             if result.returncode == 0:
                 path = result.stdout.strip()
@@ -681,6 +681,8 @@ def run_streaming(cmd, env=None):
 
     Returns the exit code. In debug mode, also tee output to last_run.log.
     """
+    if env is None:
+        env = make_subprocess_env()
     if is_debug():
         debug_log(f"$ {' '.join(str(c) for c in cmd)}")
     proc = subprocess.Popen(

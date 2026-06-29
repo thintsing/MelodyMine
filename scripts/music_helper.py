@@ -43,6 +43,7 @@ from melodymine_common import (
     is_soundcloud_url,
     is_spotify_url,
     is_youtube_url,
+    make_subprocess_env,
     pip_install,
     proxy_to_env,
     run_streaming,
@@ -834,8 +835,7 @@ def _ytdlp_download(
         index=index, cookies=cookies, ffmpeg_location=ffmpeg_exe,
     )
 
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
+    env = make_subprocess_env()
 
     return run_streaming(cmd, env=env) == 0
 
@@ -954,8 +954,7 @@ def _probe_ytdlp_codec(python, target, index=1, timeout=30, proxy=None, cookies=
         cmd.extend(["--proxy", proxy])
     if cookies:
         cmd.extend(["--cookies", cookies])
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
+    env = make_subprocess_env()
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True, timeout=timeout,
@@ -1338,8 +1337,7 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
         if proxy:
             cmd.extend(["--proxy", proxy])
 
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
+        env = make_subprocess_env()
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             env=env, encoding="utf-8", errors="replace",
@@ -2038,8 +2036,7 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
 
     cmd = _build_spotdl_cmd(python, url, output, fmt, bitrate, proxy)
 
-    env = os.environ.copy()
-    env["PYTHONIOENCODING"] = "utf-8"
+    env = make_subprocess_env()
     if proxy and proxy.startswith("socks5"):
         env["ALL_PROXY"] = proxy
 
