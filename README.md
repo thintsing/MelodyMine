@@ -1,6 +1,6 @@
 # MelodyMine
 
-Download music from Bilibili, YouTube, and Spotify URLs with automatic search, audio conversion, metadata cleanup, and zero-config dependency setup.
+Download music from Bilibili, YouTube, YouTube Music, Spotify, and Soulseek (P2P) with automatic search, audio conversion, metadata cleanup, and zero-config dependency setup.
 
 MelodyMine runs as a standalone CLI or as a file-based skill for AI assistants — WorkBuddy, Hermes, and OpenClaw. It auto-detects each platform's bundled Python runtime (WorkBuddy/Hermes ship one; OpenClaw users install Python once), so first-run setup is a single command on any of them.
 
@@ -8,7 +8,9 @@ MelodyMine runs as a standalone CLI or as a file-based skill for AI assistants �
 
 - Bilibili for Chinese music queries, using direct WBI search plus `yt-dlp`.
 - YouTube for English and international music queries.
+- YouTube Music catalog search via `ytmusicapi` (no cookies needed for search).
 - Spotify URL downloads through spotDL.
+- Soulseek P2P downloads via `aioslsk` — multi-candidate retry with FLAC→MP3 fallback.
 - Automatic, zero-config setup: auto-detects the host assistant's Python runtime (WorkBuddy/Hermes bundled, uv-managed, or system), installs pip packages, and falls back to `imageio-ffmpeg` for ffmpeg.
 - Shared dependency layer (`melodymine_common.py`) with a unified venv — dependencies install once and are reused across both helpers and every supported assistant.
 - Metadata cleanup with title, artist, album, cover, and `Artist - Title` renaming.
@@ -147,7 +149,7 @@ Options:
 | Spotify URL | spotDL | Auto-installs spotDL on first use if possible. |
 | NetEase URL (`music.163.com`) | NetEase direct → Bilibili/YouTube | Song name extracted via NetEase API. Tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube if copyrighted. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct | No search step — downloads the URL directly. YouTube may need `--proxy`. |
-| Soulseek P2N (`--platform soulseek`) | Soulseek network | Searches direct from sharers. Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads via single persistent session with multi-candidate retry. Auto-fallback after YouTube. Proxy auto-detected from Clash (SOCKS5) for server connection only; peer transfers direct.
+| Soulseek P2P (`--platform soulseek`) | Soulseek network | Searches direct from sharers. Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads via single persistent session with multi-candidate retry. Auto-fallback after YouTube. Proxy auto-detected from `ALL_PROXY`/`HTTP_PROXY` env vars or common Clash ports (7897/7890/1080); proxies all connections (server + peer). |
 | Chinese query → YouTube fail → Soulseek | Auto-fallback | When Bilibili & YouTube both fail, Soulseek is tried automatically. |
 
 ## Advanced Spotify Operations
@@ -218,7 +220,8 @@ MelodyMine/
 ├── tests/
 │   ├── test_helpers.py       # Unit tests for pure functions (stdlib unittest)
 │   ├── test_api_clients.py   # Unit tests for API client modules
-│   └── test_ytmusic_client.py# Unit tests for YouTube Music search
+│   ├── test_ytmusic_client.py# Unit tests for YouTube Music search
+│   └── test_soulseek_client.py # Unit tests for Soulseek client helpers
 └── references/
     ├── usage.md              # spotDL CLI reference
     └── config.md             # spotDL config reference

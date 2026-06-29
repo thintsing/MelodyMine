@@ -1,136 +1,125 @@
 """
-Soulseek search and download client for MelodyMine.
+Soulseek search + download client for MelodyMine.
 
-Requires: aioslsk>=1.6
-Credentials: read from SLSK_USERNAME / SLSK_PASSWORD env vars by default,
-             or passed explicitly as function arguments.
+Key features:
+  • Persistent session — client stays logged in across searches/downloads
+  • Proxy support for all connections (server + peer) via SOCKS5/HTTP
+  • Auto-reconnect with keepalive tuning
+  • Multi-candidate retry with FLAC→MP3 fallback
 
-Usage:
-    import soulseek_client
-    results = soulseek_client.search("Air Supply flac")
-    soulseek_client.download("username", "remote_file_path", "output_dir")
+Credentials: SLSK_USERNAME / SLSK_PASSWORD env vars.
+Proxy:      Auto-detected from environment or Clash default port.
 """
 
 import asyncio
 import os
 import sys
 import time
+import json
+from urllib.parse import urlparse
 
-from aioslsk.client import SoulSeekClient
-from aioslsk.settings import Settings, CredentialsSettings, NetworkSettings, SharesSettings, ListeningSettings
-from aioslsk.transfer.model import Transfer as SlskTransfer
-from aioslsk.transfer.state import TransferState
+# ── Proxy helpers ──────────────────────────────────────────────────
+
+_SOCKS5_DEFAULT = "socks5://127.0.0.1:7897"
+
+# Common Clash/mixed-proxy ports to probe (in priority order).
+_PROXY_PORTS = [7897, 7890, 1080]
 
 
-def _patch_open_connection(proxy_url):
-    """Monkey-patch asyncio.open_connection to route through SOCKS5/HTTP proxy.
+def _detect_proxy():
+    """Auto-detect a running local proxy.
 
-    Uses PySocks to create a proxied socket, then passes it to
-    asyncio.open_connection(sock=...) so all aioslsk traffic (server
-    login + peer connections) goes through the proxy.
+    Resolution order:
+      1. ``ALL_PROXY`` / ``HTTP_PROXY`` / ``HTTPS_PROXY`` env vars
+      2. Probe common Clash ports (7897, 7890, 1080) on localhost
 
-    Returns a cleanup callable to restore the original.
+    Returns a proxy URL string (e.g. ``socks5://127.0.0.1:7897``) or
+    empty string if no proxy is detected.
     """
-    if not proxy_url:
-        return lambda: None
+    # 1. Environment variables
+    for var in ("ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"):
+        val = os.environ.get(var, "")
+        if val:
+            return val
 
+    # 2. Probe common local proxy ports
+    import socket as _sock
+    for port in _PROXY_PORTS:
+        try:
+            s = _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM)
+            s.settimeout(0.5)
+            s.connect(("127.0.0.1", port))
+            s.close()
+            return f"socks5://127.0.0.1:{port}"
+        except Exception:
+            continue
+    return ""
+
+
+def _build_proxied_socket(dest_host, dest_port, proxy_url, timeout=30):
+    """Create a proxied socket (SOCKS5 or HTTP CONNECT) connected to destination."""
     from urllib.parse import urlparse
     parsed = urlparse(proxy_url)
     scheme = parsed.scheme.lower()
     proxy_host = parsed.hostname or "127.0.0.1"
     proxy_port = parsed.port or 7897
 
-    import socks as _socks
-    import asyncio as _asyncio
-
-    _orig_open_connection = _asyncio.open_connection
-
-    # Determine PySocks proxy type
-    _proxy_type = None
     if scheme in ("socks5", "socks5h"):
-        _proxy_type = _socks.SOCKS5
-    elif scheme == "socks4":
-        _proxy_type = _socks.SOCKS4
+        import socks as _socks
+        s = _socks.socksocket()
+        pt = _socks.SOCKS5
+        if scheme == "socks5h":
+            s.set_proxy(pt, addr=proxy_host, port=proxy_port, rdns=True)
+        else:
+            s.set_proxy(pt, addr=proxy_host, port=proxy_port, rdns=False)
+        s.settimeout(timeout)
+        s.connect((dest_host, dest_port))
+        return s
+
     elif scheme == "http":
-        _proxy_type = _socks.HTTP
+        # HTTP CONNECT tunnel
+        import socket as _socket
+        s = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((proxy_host, proxy_port))
+        req = (
+            f"CONNECT {dest_host}:{dest_port} HTTP/1.1\r\n"
+            f"Host: {dest_host}:{dest_port}\r\n"
+            f"User-Agent: MelodyMine/1.0\r\n\r\n"
+        )
+        s.sendall(req.encode("ascii", errors="replace"))
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = s.recv(4096)
+            if not chunk:
+                raise ConnectionError("HTTP CONNECT failed: connection closed")
+            resp += chunk
+        status_line = resp.split(b"\r\n")[0].decode("ascii", errors="replace")
+        if "200" not in status_line:
+            raise ConnectionError(f"HTTP CONNECT failed: {status_line.strip()}")
+        s.settimeout(None)
+        return s
+
     else:
-        print(f"  [!] Unknown proxy scheme: {scheme}, ignoring")
-        return lambda: None
-
-    async def _proxied_open_connection(host=None, port=None, **kwargs):
-        """Create a proxied socket and pass it to asyncio.open_connection."""
-        kwargs.pop("sock", None)
-
-        # Create a SOCKS socket and connect through the proxy (can block,
-        # so run in executor to avoid blocking the asyncio event loop)
-        proxied_sock = _socks.socksocket()
-        proxied_sock.set_proxy(_proxy_type, addr=proxy_host, port=proxy_port)
-        proxied_sock.settimeout(30)
-        loop = _asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, lambda: proxied_sock.connect((host, port)))
-        except Exception as exc:
-            proxied_sock.close()
-            raise ConnectionError(f"Proxy connect to {host}:{port} failed: {exc}")
-
-        kwargs["sock"] = proxied_sock
-        return await _orig_open_connection(host=None, port=None, **kwargs)
-
-    _asyncio.open_connection = _proxied_open_connection
-
-    def _restore():
-        _asyncio.open_connection = _orig_open_connection
-
-    return _restore
+        raise ValueError(f"Unsupported proxy scheme: {scheme}")
 
 
-class _ProxyScope:
-    """Context manager that wraps asyncio.open_connection for SOCKS5 proxying."""
-    def __init__(self, proxy_url=""):
-        self._restore = None
-        self._url = proxy_url
-
-    def __enter__(self):
-        if not self._url:
-            return self
-        self._restore = _patch_open_connection(self._url)
-        print(f"  Proxy active: {self._url}")
-        return self
-
-    def __exit__(self, *args):
-        if self._restore:
-            self._restore()
-
-
-class _NoopTransferCache:
-    """Minimal TransferCache implementation (no persistence)."""
-    def read(self) -> list[SlskTransfer]:
-        return []
-    def write(self, transfers: list[SlskTransfer]):
-        pass
-
+# ── Credentials ────────────────────────────────────────────────────
 
 def _get_creds(username=None, password=None):
-    username = username or os.environ.get("SLSK_USERNAME") or ""
-    password = password or os.environ.get("SLSK_PASSWORD") or ""
-    if not username or not password:
+    u = username or os.environ.get("SLSK_USERNAME") or ""
+    p = password or os.environ.get("SLSK_PASSWORD") or ""
+    if not u or not p:
         print("  [!] Soulseek credentials not set. Set SLSK_USERNAME and SLSK_PASSWORD env vars.")
         return None, None
-    return username, password
-
-
-def _state_val(state_obj):
-    """Get the VALUE enum from a TransferState object for comparisons."""
-    return getattr(state_obj, 'VALUE', TransferState.UNSET)
+    return u, p
 
 
 def _safe(s):
-    """Strip non-printable Unicode control chars that crash Windows GBK terminals."""
-    return "".join(c for c in s if c.isprintable() or c == " ")
+    return "".join(c for c in (s or "") if c.isprintable() or c == " ")
 
 
 def _ext_guard(item):
-    """Get file extension from a FileData item, falling back to filename parsing."""
     ext = getattr(item, "extension", None)
     if ext:
         return ext
@@ -140,253 +129,351 @@ def _ext_guard(item):
     return ""
 
 
-async def _async_search(query, username, password, wait=15):
-    """Async Soulseek search. Returns list of (username, FileData) tuples."""
-    settings = Settings(
-        credentials=CredentialsSettings(username=username, password=password),
-        network=NetworkSettings(
-            listening=ListeningSettings(port=0, obfuscated_port=0, error_mode='any'),
-            upnp={'enable': False},
-        ),
-    )
-    client = SoulSeekClient(settings)
-    await client.start()
-    await client.login()
+# ── Persistent session manager ────────────────────────────────────
 
-    req = await client.searches.search(query)
+class _SoulseekSession:
+    """A persistent aioslsk session that stays connected across calls.
 
-    for i in range(wait):
-        await asyncio.sleep(1)
-        if len(req.results) > 0 and len(req.results) % 20 == 0:
-            pass  # silently accumulating
-
-    results = list(req.results)
-    await client.stop()
-    return results
-
-
-def search(query, username=None, password=None, wait=15, max_results=50, proxy=""):
+    Usage:
+        session = _SoulseekSession("user", "pass", proxy_url)
+        async with session:
+            results = await session.search("query")
+            ok = await session.download("user", "path", "outdir")
     """
-    Search Soulseek network for audio files.
 
-    Args:
-        query: Search string
-        username/password: Soulseek credentials (or use env vars)
-        wait: Seconds to wait for results
-        max_results: Max files to return
-        proxy: Proxy URL (e.g. "socks5://127.0.0.1:7897")
+    def __init__(self, username, password, proxy=""):
+        self._username = username
+        self._password = password
+        self._proxy = proxy
+        self.client = None
+        self._restore_open_conn = None
 
-    Returns list of dicts::
-        [
-            {
-                "username": "musiclover",
-                "filename": "Air Supply - Making Love Out of Nothing at All.flac",
-                "filesize": 60000000,
-                "extension": "flac",
-                "shared_items_count": 1,
-                "has_free_slots": True,
-                "avg_speed": 100.0,
-                "queue_size": 0,
-            },
-            ...
-        ]
+    async def __aenter__(self):
+        from aioslsk.client import SoulSeekClient
+        from aioslsk.settings import (Settings, CredentialsSettings, NetworkSettings,
+                                       SharesSettings, ServerSettings,
+                                       ReconnectSettings, ListeningSettings,
+                                       ListeningConnectionErrorMode,
+                                       UpnpSettings)
 
-    The returned list is sorted by filesize descending (largest first).
-    """
-    username, password = _get_creds(username, password)
-    if not username:
-        return []
+        settings = Settings(
+            credentials=CredentialsSettings(username=self._username, password=self._password),
+            network=NetworkSettings(
+                server=ServerSettings(
+                    reconnect=ReconnectSettings(auto=True, timeout=10),
+                ),
+                listening=ListeningSettings(
+                    port=60001,
+                    obfuscated_port=0,
+                    error_mode=ListeningConnectionErrorMode.ALL,
+                ),
+                upnp=UpnpSettings(enabled=True, check_interval=30, search_timeout=5),
+            ),
+            shares=SharesSettings(download=''),
+        )
+        self.client = SoulSeekClient(settings)
 
-    with _ProxyScope(proxy):
-        results = asyncio.run(_async_search(query, username, password, wait))
+        # ── Monkey-patch: tolerate listening port failure ──
+        from aioslsk.exceptions import ListeningConnectionFailedError
+        from aioslsk.network.connection import ConnectionState, CloseReason
+        from aioslsk.exceptions import ConnectionFailedError as ConnFailed
 
-    # Flatten: each SearchResult has multiple shared_items
-    flat = []
-    seen = set()
-    for r in results:
-        for item in r.shared_items:
-            key = (r.username, item.filename)
-            if key in seen:
-                continue
-            seen.add(key)
-            flat.append({
-                "username": r.username,
-                "filename": item.filename,
-                "filesize": item.filesize,
-                "extension": _ext_guard(item),
-                "shared_items_count": len(r.shared_items),
-                "has_free_slots": r.has_free_slots,
-                "avg_speed": r.avg_speed,
-                "queue_size": r.queue_size,
-            })
+        async def _patched_init():
+            """Run original init, but don't crash on listening port failure."""
+            from aioslsk.network import upnp as _upnp
+            self.client.network._upnp = _upnp.UPNP()
+            try:
+                await self.client.network.connect_listening_ports()
+            except ListeningConnectionFailedError:
+                pass
+            await self.client.network.connect_server()
+        self.client.network.initialize = _patched_init
 
-    # Sort by filesize descending (higher quality likely = larger)
-    flat.sort(key=lambda x: -x["filesize"])
+        # ── Monkey-patch 2: proxy ALL connections (like SoulseekQt) ──
+        if self._proxy:
+            print(f"  Proxy active: {self._proxy}")
+            import asyncio as _asyncio
 
-    if max_results and max_results > 0:
-        flat = flat[:max_results]
+            # 2a: Server connection via proxy
+            _orig_server_conn = type(self.client.network).connect_server
+            async def _proxied_connect_server():
+                """Connect to Soulseek server via SOCKS5 proxy."""
+                conn = self.client.network.server_connection
+                await conn.set_state(ConnectionState.CONNECTING)
+                try:
+                    sock = _build_proxied_socket(
+                        conn.hostname, conn.port,
+                        self._proxy, timeout=30)
+                    reader, writer = await _asyncio.open_connection(sock=sock)
+                    conn._reader = reader
+                    conn._writer = writer
+                    await conn.set_state(ConnectionState.CONNECTED)
+                except (Exception, _asyncio.TimeoutError) as exc:
+                    await conn.disconnect(CloseReason.CONNECT_FAILED)
+                    raise ConnFailed(f"{conn.hostname}:{conn.port} : failed to connect") from exc
+            self.client.network.connect_server = _proxied_connect_server
 
-    return flat
+            # 2b: Proxy ALL peer connections (distributed, peer control, etc.)
+            _orig_open_conn = _asyncio.open_connection
+            async def _proxied_open_conn(host=None, port=None, *, sock=None, **kwargs):
+                if sock is not None:
+                    # Already has a proxied socket (server connection)
+                    return await _orig_open_conn(sock=sock, **kwargs)
+                # Proxy this peer connection
+                proxy_sock = _build_proxied_socket(host, port, self._proxy, timeout=30)
+                return await _orig_open_conn(sock=proxy_sock)
 
+            def _restore():
+                _asyncio.open_connection = _orig_open_conn
 
-async def _async_download(username, password, target_user, remote_path, output_dir, timeout_secs=120):
-    """Async download a single file from a Soulseek user."""
-    os.makedirs(output_dir, exist_ok=True)
+            _asyncio.open_connection = _proxied_open_conn
+            self._restore_open_conn = _restore
 
-    settings = Settings(
-        credentials=CredentialsSettings(username=username, password=password),
-        network=NetworkSettings(
-            listening=ListeningSettings(port=0, obfuscated_port=0, error_mode='any'),
-            upnp={'enable': False},
-        ),
-        shares=SharesSettings(download=output_dir),
-    )
-    client = SoulSeekClient(settings)
-    await client.start()
-    await client.login()
+        await self.client.start()
+        await self.client.login()
+        return self
 
-    # Set up transfer manager
-    transfer_mgr = client.create_transfer_manager(_NoopTransferCache())
-    await transfer_mgr.start()
+    async def __aexit__(self, *args):
+        if self._restore_open_conn:
+            self._restore_open_conn()
+            self._restore_open_conn = None
+        if self.client:
+            await self.client.stop()
+            self.client = None
 
-    # Find the filename for display
-    filename = remote_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-    print(f"  Downloading from {_safe(target_user)}: {_safe(filename)}")
-
-    try:
-        transfer = await transfer_mgr.download(target_user, remote_path)
-
-        # Wait for completion
-        start = time.time()
-        success = False
-        while time.time() - start < timeout_secs:
+    async def search(self, query, wait=15, max_results=50):
+        """Search Soulseek. Returns flattened results list."""
+        req = await self.client.searches.search(query)
+        for i in range(wait):
             await asyncio.sleep(1)
 
-            if transfer.is_transfered():
-                success = True
-                elapsed = time.time() - start
-                print(f"  Completed in {elapsed:.0f}s")
-                break
+        results = list(req.results)
+        flat = []
+        seen = set()
+        for r in results:
+            for item in (r.shared_items or []):
+                key = (r.username, item.filename)
+                if key in seen:
+                    continue
+                seen.add(key)
+                flat.append({
+                    "username": r.username,
+                    "filename": item.filename,
+                    "filesize": item.filesize,
+                    "extension": _ext_guard(item),
+                    "shared_items_count": len(r.shared_items or []),
+                    "has_free_slots": r.has_free_slots,
+                    "avg_speed": r.avg_speed,
+                    "queue_size": r.queue_size,
+                })
 
-            if _state_val(transfer.state) == TransferState.FAILED:
-                reason = transfer.fail_reason or "unknown"
-                print(f"  [!] Transfer failed: {reason}")
-                break
+        flat.sort(key=lambda x: -x["filesize"])
+        if max_results > 0:
+            flat = flat[:max_results]
+        return flat
 
-            if _state_val(transfer.state) == TransferState.ABORTED:
-                reason = transfer.abort_reason or "aborted"
-                print(f"  [!] Transfer aborted: {reason}")
-                break
+    async def download(self, target_user, remote_path, output_dir, timeout=0):
+        """Download a file using client's built-in transfer manager.
 
-        if not success:
-            if time.time() - start >= timeout_secs:
-                print(f"  [!] Timeout after {timeout_secs}s")
+        Args:
+            timeout: Max seconds to wait. 0 = wait indefinitely (default).
+                     If filesize is known from search, timeout is auto-calculated.
+        """
+        if not os.path.isdir(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+
+        filename = remote_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        print(f"  Downloading from {_safe(target_user)}: {_safe(filename)}")
+
+        if self.client.settings.shares.download != output_dir:
+            self.client.settings.shares.download = output_dir
+
+        from aioslsk.transfer.state import TransferState
+
+        try:
+            transfer = await self.client.transfers.download(target_user, remote_path)
+            print(f"  Transfer created: {transfer}", flush=True)
+
+            start = time.time()
+            last_size = 0
+            stall_time = 0
+            # If no explicit timeout, allow 30 min
+            actual_timeout = timeout if timeout > 0 else 1800
+
+            while time.time() - start < actual_timeout:
+                await asyncio.sleep(2)
+
+                st = getattr(transfer.state, "VALUE", TransferState.UNSET)
+
+                if st == TransferState.COMPLETE or transfer.is_transfered():
+                    print(f"  Completed in {time.time() - start:.0f}s", flush=True)
+                    break
+
+                if st == TransferState.FAILED:
+                    reason = transfer.fail_reason or "unknown"
+                    print(f"  [!] Transfer failed: {reason}", flush=True)
+                    return False, None
+
+                if st == TransferState.ABORTED:
+                    reason = transfer.abort_reason or "aborted"
+                    print(f"  [!] Transfer aborted: {reason}", flush=True)
+                    return False, None
+
+                # Check if file is growing (stall detection)
+                lp = transfer.local_path
+                if lp and os.path.isfile(lp):
+                    cur_size = os.path.getsize(lp)
+                    if cur_size == last_size:
+                        stall_time += 2
+                        if stall_time > 60:  # stalled for 60s
+                            print(f"  [!] Transfer stalled ({cur_size/1024/1024:.1f}MB), aborting", flush=True)
+                            return False, None
+                    else:
+                        stall_time = 0
+                        last_size = cur_size
+
+                    elapsed = time.time() - start
+                    if int(elapsed) % 15 == 0:
+                        speed = cur_size / 1024 / 1024 / elapsed if elapsed > 0 else 0
+                        print(f"  {cur_size/1024/1024:.1f}MB / ? ({speed:.1f} MB/s, {elapsed:.0f}s)", flush=True)
+
+            if time.time() - start >= actual_timeout:
+                print(f"  [!] Timeout after {actual_timeout}s, state={getattr(transfer.state, 'VALUE', '?').name}", flush=True)
+                return False, None
+
+            lp = transfer.local_path
+            if lp and os.path.isfile(lp):
+                sz = os.path.getsize(lp) / (1024 * 1024)
+                print(f"  Saved: {sz:.1f} MB -> {lp}", flush=True)
+                return True, lp
+
+            print(f"  [!] File not found at {lp}", flush=True)
             return False, None
 
-        local_path = transfer.local_path
-        if local_path and os.path.isfile(local_path):
-            size_mb = os.path.getsize(local_path) / (1024 * 1024)
-            print(f"  Downloaded: {size_mb:.1f} MB")
-            return True, local_path
-        else:
-            print(f"  [!] File not found at local path: {local_path}")
+        except Exception as e:
+            print(f"  [!] Download error: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
             return False, None
 
-    except Exception as e:
-        print(f"  [!] Download error: {e}")
-        return False, None
-    finally:
-        await transfer_mgr.stop()
-        await client.stop()
+
+# ── Public API (compatible with old soulseek_client) ───────────────
+
+def search(query, username=None, password=None, wait=15, max_results=50, proxy=""):
+    """Search Soulseek.  Auto-detects Clash proxy if proxy not specified."""
+    u, p = _get_creds(username, password)
+    if not u:
+        return []
+
+    actual_proxy = proxy or _detect_proxy()
+    if not actual_proxy:
+        print(f"  No proxy configured (VPS is outside China, direct connection).")
+
+    async def _run():
+        async with _SoulseekSession(u, p, actual_proxy) as sess:
+            return await sess.search(query, wait, max_results)
+
+    return asyncio.run(_run())
 
 
 def download(target_user, remote_path, output_dir, username=None, password=None, timeout=120, proxy=""):
-    """
-    Download a file from a Soulseek user.
-
-    Args:
-        target_user: Soulseek username of the sharer
-        remote_path: Full remote file path as returned by search()
-        output_dir: Local directory to save the file
-        username/password: Soulseek credentials (or use env vars)
-        proxy: Proxy URL (e.g. "socks5://127.0.0.1:7897")
-
-    Returns:
-        (True, local_filepath) on success, (False, None) on failure
-    """
-    username, password = _get_creds(username, password)
-    if not username:
+    u, p = _get_creds(username, password)
+    if not u:
         return False, None
 
-    os.makedirs(output_dir, exist_ok=True)
+    actual_proxy = proxy or _detect_proxy()
+    if not actual_proxy:
+        print(f"  No proxy configured (VPS is outside China, direct connection).")
+
+    async def _run():
+        async with _SoulseekSession(u, p, actual_proxy) as sess:
+            return await sess.download(target_user, remote_path, output_dir, timeout)
 
     try:
-        with _ProxyScope(proxy):
-            success, path = asyncio.run(
-                _async_download(username, password, target_user, remote_path, output_dir, timeout)
-            )
-        return success, path
+        return asyncio.run(_run())
     except Exception as e:
         print(f"  [!] Soulseek download error: {e}")
         return False, None
 
 
-def download_best(candidates, output_dir, username=None, password=None, max_retries=3, proxy=""):
-    """
-    Try multiple Soulseek candidates in order until one succeeds.
-
-    ``candidates`` is a list of dicts with keys ``username`` and ``filename``,
-    as returned by ``search()``.  Each candidate is tried in sequence;
-    exponential backoff (1s, 2s, 4s) is applied between retries of the same
-    candidate.  Returns ``(True, local_path)`` on success or
-    ``(False, None)`` if all candidates fail.
-
-    Timeout scales by file size:
-      - < 20 MB: 120s
-      - 20-50 MB: 240s
-      - > 50 MB: 360s
-    """
-    import time as _time
-    username, password = _get_creds(username, password)
-    if not username:
+def search_and_download(query, output_dir, username=None, password=None, wait=15, timeout=120, proxy=""):
+    """Search then immediately download the first working result in ONE session."""
+    u, p = _get_creds(username, password)
+    if not u:
         return False, None
+
+    actual_proxy = proxy or _detect_proxy()
+    if not actual_proxy:
+        print(f"  No proxy configured (VPS is outside China, direct connection).")
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    async def _run():
+        async with _SoulseekSession(u, p, actual_proxy) as sess:
+            # Search
+            results = await sess.search(query, wait)
+            print(f"  Search returned {len(results)} results")
+
+            # Pick candidates: prefer FLAC over MP3, prefer smaller files
+            candidates = [r for r in results if r.get("extension") in ("flac", "mp3", "wav", "alac", "ape", "wv")]
+            candidates.sort(key=lambda x: (0 if x["extension"] == "flac" else 1, x["filesize"]))
+
+            if not candidates:
+                print("  [!] No audio candidates found")
+                return False, None
+
+            for r in candidates[:5]:
+                name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+                print(f"  Trying: {_safe(r['username'])} | {name[:50]}")
+                ok, path = await sess.download(r["username"], r["filename"], output_dir, timeout)
+                if ok:
+                    return True, path
+            return False, None
+
+    try:
+        return asyncio.run(_run())
+    except Exception as e:
+        print(f"  [!] search_and_download error: {e}")
+        return False, None
+
+
+def download_best(candidates, output_dir, username=None, password=None, max_retries=3, proxy=""):
+    u, p = _get_creds(username, password)
+    if not u:
+        return False, None
+
+    actual_proxy = proxy or _detect_proxy()
+    if not actual_proxy:
+        print(f"  No proxy configured (VPS is outside China, direct connection).")
 
     os.makedirs(output_dir, exist_ok=True)
 
     for idx, cand in enumerate(candidates):
-        target_user = cand["username"]
-        remote_path = cand["filename"]
-        filesize = cand.get("filesize", 0)
-        name = remote_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        tu = cand["username"]
+        rp = cand["filename"]
+        fs = cand.get("filesize", 0)
 
-        # Scale timeout by file size
-        if filesize > 50 * 1024 * 1024:
-            to = 360
-        elif filesize > 20 * 1024 * 1024:
-            to = 240
-        else:
-            to = 120
+        to = 360 if fs > 50 * 1024 * 1024 else (240 if fs > 20 * 1024 * 1024 else 120)
 
         for attempt in range(max_retries):
-            print(f"  [{idx + 1}/{len(candidates)}] Trying {_safe(target_user)}: {_safe(name)} "
+            name = rp.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+            print(f"  [{idx + 1}/{len(candidates)}] Trying {_safe(tu)}: {_safe(name)} "
                   f"(attempt {attempt + 1}/{max_retries})")
-            ok, path = download(
-                target_user, remote_path, output_dir,
-                username=username, password=password, timeout=to,
-                proxy=proxy)
+            ok, path = download(tu, rp, output_dir, u, p, to, actual_proxy)
             if ok and path:
                 return True, path
             if attempt < max_retries - 1:
-                wait = 1 + attempt * 2  # 1s, 3s, 5s
-                print(f"    [-] Failed, retrying in {wait}s...")
-                _time.sleep(wait)
+                w = 1 + attempt * 2
+                print(f"    [-] Failed, retrying in {w}s...")
+                time.sleep(w)
 
     print(f"  [!] All {len(candidates)} candidates exhausted.")
     return False, None
 
 
+# ── CLI ────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
-    # CLI mode for quick testing
     if len(sys.argv) < 2:
         print("Usage:")
         print("  search:  python soulseek_client.py search <query>")
@@ -396,7 +483,8 @@ if __name__ == "__main__":
     action = sys.argv[1]
     if action == "search":
         query = " ".join(sys.argv[2:])
-        results = search(query)
+        proxy = _detect_proxy()
+        results = search(query, proxy=proxy)
         print(f"\nFound {len(results)} results:")
         for r in results[:30]:
             name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]

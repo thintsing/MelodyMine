@@ -54,7 +54,7 @@ import bili_client
 import cover_client
 import mbrainz_client
 import netease_client
-import soulseek_client_v2 as soulseek_client
+import soulseek_client
 import ytmusic_client
 
 # ─── Dependencies ────────────────────────────────────────────────────────
