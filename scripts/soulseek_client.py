@@ -111,6 +111,37 @@ class _SoulseekSession:
         self._proxy = proxy
         self.client = None
         self._restore_open_conn = None
+        # Suppress noisy ConnectToPeer failure warnings at module level
+        self._suppress_connect_logger()
+
+    @staticmethod
+    def _suppress_connect_logger():
+        """Suppress aioslsk WARNING-level noise that floods the output.
+
+        Harmless messages we suppress:
+        - "failed to fulfill ConnectToPeer request" — peers try to connect
+          to us but we're behind a corporate firewall (inbound P connections)
+        - "failed connect on user request" — same root cause
+        - "not returning search results : no valid session was set" —
+          happens when download phase receives distributed search results
+          from an earlier search
+        """
+        import logging as _logging
+        import re
+
+        _noisy = re.compile(r"ConnectToPeer|failed connect on user|not returning search results")
+
+        class _SuppressFilter(_logging.Filter):
+            def filter(self, record):
+                return not _noisy.search(record.getMessage())
+
+        # Apply to both network and search loggers (only once)
+        if not hasattr(_SoulseekSession, "_log_suppressed"):
+            _filter = _SuppressFilter("_soulseek_noise_filter")
+            for logger_name in ("aioslsk.network.network", "aioslsk.search.manager"):
+                _log = _logging.getLogger(logger_name)
+                _log.addFilter(_filter)
+            _SoulseekSession._log_suppressed = True
 
     async def __aenter__(self):
         from aioslsk.client import SoulSeekClient
