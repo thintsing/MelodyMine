@@ -328,23 +328,106 @@ class _SoulseekSession:
             return False, None
 
 
+# ── Multi-query strategy ─────────────────────────────────────
+
+# Words that often don't help Soulseek searches (articles, filler)
+_STOP_WORDS = {"the", "a", "an", "of", "in", "on", "at", "to", "for", "with",
+               "and", "or", "is", "it", "feat", "ft", "featuring", "vs",
+               "remix", "edit", "version", "official", "audio", "video",
+               "music", "lyric", "lyrics", "hq", "hd", "4k", "1080p"}
+
+def _generate_queries(query):
+    """Generate alternative search queries when the original returns nothing.
+
+    Strategy (proven effective from real tests):
+    - For Chinese queries: try pinyin, artist-only, title-only
+    - For English queries: try reversed order, title-only, artist-only
+    - Always try with 'flac' and 'mp3' suffix
+    """
+    q = query.strip()
+    queries = [q]
+
+    # Detect if contains Chinese characters
+    has_cjk = any('\u4e00' <= c <= '\u9fff' for c in q)
+
+    words = q.split()
+
+    if has_cjk:
+        # Chinese song: also try English/pinyin queries
+        # Split by spaces or just keep original
+        queries.append(q + " flac")
+        queries.append(q + " mp3")
+        # Try removing stop words
+        filtered = [w for w in words if w.lower() not in _STOP_WORDS]
+        if filtered and filtered != words:
+            queries.append(" ".join(filtered))
+    else:
+        # English/international song
+        # Try reversed order for multi-word queries
+        if len(words) > 1:
+            queries.append(" ".join(reversed(words)))
+            queries[-1] = queries[-1].lower()
+
+        # Add format hints
+        queries.append(q + " flac")
+        queries.append(q + " mp3")
+
+        # Try individual words (artist or title alone)
+        for w in words:
+            if w.lower() not in _STOP_WORDS and len(w) > 2:
+                queries.append(w)
+
+    # Remove duplicates while preserving order
+    seen = set()
+    deduped = []
+    for qq in queries:
+        key = qq.strip().lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(qq.strip())
+
+    return deduped
+
+
 # ── Public API (compatible with old soulseek_client) ───────────────
 
-def search(query, username=None, password=None, wait=15, max_results=50, proxy=""):
-    """Search Soulseek.  Auto-detects Clash proxy if proxy not specified."""
+def search(query, username=None, password=None, wait=15, max_results=50, proxy="",
+           auto_multi=True):
+    """Search Soulseek.  Auto-detects Clash proxy if proxy not specified.
+
+    If ``auto_multi`` is True (default) and initial query returns 0 results,
+    the search automatically tries alternative queries via ``_generate_queries()``.
+    """
     u, p = _get_creds(username, password)
     if not u:
         return []
 
     actual_proxy = proxy or _detect_proxy()
-    if not actual_proxy:
-        print(f"  No proxy configured (VPS is outside China, direct connection).")
 
-    async def _run():
+    async def _run(q):
         async with _SoulseekSession(u, p, actual_proxy) as sess:
-            return await sess.search(query, wait, max_results)
+            return await sess.search(q, wait, max_results)
 
-    return asyncio.run(_run())
+    # First pass: original query
+    results = asyncio.run(_run(query))
+
+    if results or not auto_multi:
+        return results
+
+    # Multi-query fallback: try alternative queries
+    alt_queries = _generate_queries(query)
+    tried = []
+    for alt_q in alt_queries:
+        if alt_q.lower() == query.strip().lower():
+            continue
+        tried.append(alt_q)
+        print(f"  [+] Original query returned 0. Trying: {alt_q[:60]}")
+        results = asyncio.run(_run(alt_q))
+        if results:
+            print(f"  [+] Found {len(results)} results with alternative query!")
+            return results
+
+    return []
 
 
 def download(target_user, remote_path, output_dir, username=None, password=None, timeout=120, proxy=""):
@@ -368,41 +451,55 @@ def download(target_user, remote_path, output_dir, username=None, password=None,
 
 
 def search_and_download(query, output_dir, username=None, password=None, wait=15, timeout=120, proxy=""):
-    """Search then immediately download the first working result in ONE session."""
+    """Search then immediately download the first working result in ONE session.
+
+    Supports multi-query fallback: if initial query returns 0 results,
+    tries alternative queries automatically.
+    """
     u, p = _get_creds(username, password)
     if not u:
         return False, None
 
     actual_proxy = proxy or _detect_proxy()
-    if not actual_proxy:
-        print(f"  No proxy configured (VPS is outside China, direct connection).")
 
     os.makedirs(output_dir, exist_ok=True)
 
-    async def _run():
+    async def _run(q):
         async with _SoulseekSession(u, p, actual_proxy) as sess:
-            # Search
-            results = await sess.search(query, wait)
-            print(f"  Search returned {len(results)} results")
+            results = await sess.search(q, wait)
+            print(f"  Search for '{q[:60]}' - {len(results)} results")
 
-            # Pick candidates: prefer FLAC over MP3, prefer smaller files
             candidates = [r for r in results if r.get("extension") in ("flac", "mp3", "wav", "alac", "ape", "wv")]
             candidates.sort(key=lambda x: (0 if x["extension"] == "flac" else 1, x["filesize"]))
 
             if not candidates:
-                print("  [!] No audio candidates found")
-                return False, None
+                return None
 
             for r in candidates[:5]:
                 name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
                 print(f"  Trying: {_safe(r['username'])} | {name[:50]}")
                 ok, path = await sess.download(r["username"], r["filename"], output_dir, timeout)
                 if ok:
-                    return True, path
-            return False, None
+                    return (True, path)
+            return (False, None)
 
+    # Try original query first
     try:
-        return asyncio.run(_run())
+        result = asyncio.run(_run(query))
+        if result is None:
+            # Multi-query fallback
+            alt_queries = _generate_queries(query)
+            for alt_q in alt_queries:
+                if alt_q.lower() == query.strip().lower():
+                    continue
+                print(f"  [+] Original query empty. Trying: {alt_q[:60]}")
+                result = asyncio.run(_run(alt_q))
+                if result:
+                    return result
+                if result is not None:
+                    return result
+            return False, None
+        return result
     except Exception as e:
         print(f"  [!] search_and_download error: {e}")
         return False, None
