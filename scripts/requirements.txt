@@ -17,4 +17,4 @@ aioslsk>=1.6.3
 
 # YouTube Music metadata search (optional — music_helper.py falls back to
 # yt-dlp or bilibili search when not installed)
-ytmusicapi>=1.14.0
+ytmusicapi>=1.12.0
