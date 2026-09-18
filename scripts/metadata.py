@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cover_client
+import lyrics_client
 import mbrainz_client
 import netease_client
 from melodymine_common import (
@@ -409,10 +410,30 @@ def _best_metadata_candidate(results, artist, title, **kwargs):
     return best_score, best_data
 
 
+# ─── Lyrics helper ──────────────────────────────────────────────────────
+
+def _fetch_and_save_lyrics(artist, title, album, filepath):
+    """Fetch lyrics from LRCLIB and save as .lrc file.
+
+    Returns the .lrc path on success, None on failure. Never raises.
+    """
+    try:
+        data = lyrics_client.get_lyrics(artist, title, album=album)
+        if not data:
+            print("  Lyrics: not found")
+            return None
+        synced = data.get("synced_lyrics", "")
+        plain = data.get("plain_lyrics", "")
+        lrc_path = lyrics_client.save_lrc(filepath, synced, plain)
+        return lrc_path
+    except Exception:
+        return None
+
+
 # ─── Main metadata enhancement ─────────────────────────────────────────
 
 def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
-                     filepath=None, before_snapshot=None):
+                     filepath=None, before_snapshot=None, fetch_lyrics=True):
     """
     Post-download metadata enhancement (multi-source strategy).
 
@@ -444,6 +465,13 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
     if existing_artist and existing_title:
         print(f"\n  File already tagged: {existing_artist} - {existing_title}")
         print("  Skipping metadata enhancement.")
+        if fetch_lyrics:
+            lrc_base = os.path.splitext(filepath)[0] + ".lrc"
+            if not os.path.isfile(lrc_base):
+                print("  Fetching lyrics for existing file...")
+                lrc_path = _fetch_and_save_lyrics(existing_artist, existing_title, None, filepath)
+                if lrc_path:
+                    print(f"  Lyrics: {os.path.basename(lrc_path)}")
         return
 
     print("\n[3/3] Enhancing metadata...")
@@ -558,9 +586,16 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
         if new_path != filepath and not os.path.exists(new_path):
             try:
                 os.rename(filepath, new_path)
+                filepath = new_path
                 print(f"  Renamed: {os.path.basename(new_path)}")
             except Exception:
                 pass
+
+    # ── Fetch lyrics ──
+    if fetch_lyrics:
+        lrc_path = _fetch_and_save_lyrics(artist, title, album, filepath)
+        if lrc_path:
+            print(f"  Lyrics: {os.path.basename(lrc_path)}")
 
     if cover_path and os.path.isfile(cover_path):
         try:

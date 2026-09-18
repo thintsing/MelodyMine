@@ -368,6 +368,8 @@ def main():
         help="Path to ffmpeg executable")
     parser.add_argument("--query",
         help="Search query for metadata lookup (used with 'meta'; defaults to filename)")
+    parser.add_argument("--no-lyrics", action="store_true",
+        help="Skip lyrics fetching (used with 'meta')")
 
     args = parser.parse_args()
 
@@ -413,7 +415,8 @@ def main():
         print(f"  File  : {filepath}")
         print(f"  Query : {query}")
         print()
-        enhance_metadata(query, "", output_dir, embed_thumbnail=True, filepath=filepath)
+        enhance_metadata(query, "", output_dir, embed_thumbnail=True,
+                         filepath=filepath, fetch_lyrics=not args.no_lyrics)
         print("\n[OK] Metadata update complete!")
         return
 

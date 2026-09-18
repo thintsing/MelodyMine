@@ -24,6 +24,7 @@ import sys
 import time
 
 import bili_client
+import kuwo_client
 import metadata as _metadata_mod
 import netease_client
 import soulseek_client
@@ -225,6 +226,23 @@ def _download_plan(
 
     selected = auto_select_platform(query) if platform == "auto" else platform
     notes = []
+
+    if selected == "kuwo":
+        return {
+            "ok": True,
+            "dry_run": True,
+            "engine": "kuwo-api-direct",
+            "platform": "kuwo",
+            "query": query,
+            "format": fmt,
+            "output": output,
+            "proxy": proxy,
+            "index": index,
+            "embed_thumbnail": embed_thumbnail,
+            "metadata": not no_metadata,
+            "command": f"kuwo_client.search({query!r}) → get_download_url() → urllib download",
+            "notes": ["Kuwo: search → resolve CDN URL → direct download (no yt-dlp)."],
+        }
 
     if selected == "bilibili":
         url_slot = "https://www.bilibili.com/video/<bvid>"
@@ -901,6 +919,21 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
         else:
             print("No Soulseek results.")
             print("Make sure SLSK_USERNAME and SLSK_PASSWORD are set.")
+    elif platform == "kuwo":
+        results = kuwo_client.search(query, limit=limit)
+        if results:
+            for i, r in enumerate(results, 1):
+                dur = r.get("duration", 0)
+                dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
+                print(f"  {i}. [{dur_str}] {r['artist']} - {r['title']}")
+                if r.get("album"):
+                    print(f"     Album: {r['album']} | music_id: {r['music_id']}")
+                else:
+                    print(f"     music_id: {r['music_id']}")
+                print()
+            print(f"Top {len(results)} results. Use --index N to download a specific result.")
+        else:
+            print("No Kuwo results.")
     else:
         # YouTube search via yt-dlp
         search_query = f"ytsearch:{query}"
@@ -938,7 +971,8 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
             print("No results. Add --proxy if YouTube is blocked in your region.")
 
 
-def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False):
+def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False,
+             fetch_lyrics=True):
     """Update metadata for an existing audio file.
 
     Uses the same multi-source lookup (MusicBrainz + NetEase + iTunes) as the
@@ -967,7 +1001,8 @@ def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False):
     print(f"  Thumbnail: {'embed' if embed_thumbnail else 'skip'}")
     print()
 
-    enhance_metadata(query, "", output_dir, embed_thumbnail=embed_thumbnail, filepath=filepath)
+    enhance_metadata(query, "", output_dir, embed_thumbnail=embed_thumbnail,
+                     filepath=filepath, fetch_lyrics=fetch_lyrics)
 
     print("\n[OK] Metadata update complete!")
     result = {
@@ -982,17 +1017,20 @@ def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False):
 
 
 def _try_soulseek_once(query, output, fmt, bitrate, embed_thumbnail, no_metadata,
-                      slsk_user=None, slsk_pass=None, proxy=None):
+                      slsk_user=None, slsk_pass=None, proxy=None,
+                      fetch_lyrics=True):
     """Try a Soulseek P2P download once.  Returns result dict (ok=True on success)."""
     return _do_soulseek_download(
         query, output, fmt, bitrate, embed_thumbnail, no_metadata,
         slsk_user=slsk_user, slsk_pass=slsk_pass, proxy=proxy or "",
+        fetch_lyrics=fetch_lyrics,
     )
 
 
 def _soulseek_with_fallback(py, query, output, fmt, proxy, bitrate, index,
                             embed_thumbnail, no_metadata, cookies, before,
-                            slsk_user, slsk_pass, quick, fallback_platform):
+                            slsk_user, slsk_pass, quick, fallback_platform,
+                            fetch_lyrics=True):
     """Try Soulseek first; if it fails or --quick, fall back to the named platform."""
     if not quick:
         print("=" * 60)
@@ -1005,6 +1043,7 @@ def _soulseek_with_fallback(py, query, output, fmt, proxy, bitrate, index,
         result = _try_soulseek_once(
             query, output, fmt, bitrate, embed_thumbnail, no_metadata,
             slsk_user=slsk_user, slsk_pass=slsk_pass, proxy=proxy,
+            fetch_lyrics=fetch_lyrics,
         )
         if result.get("ok"):
             return result
@@ -1019,6 +1058,7 @@ def _soulseek_with_fallback(py, query, output, fmt, proxy, bitrate, index,
 def _download_bilibili(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
     no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+    fetch_lyrics=True,
 ):
     """Bilibili pipeline: Soulseek → wbi search + yt-dlp → API direct → YouTube."""
     # Tier 1: Soulseek P2P
@@ -1026,6 +1066,7 @@ def _download_bilibili(
         py, query, output, fmt, proxy, bitrate, index,
         embed_thumbnail, no_metadata, cookies, before,
         slsk_user, slsk_pass, quick, fallback_platform="Bilibili",
+        fetch_lyrics=fetch_lyrics,
     )
     if slsk_result:
         return slsk_result
@@ -1047,6 +1088,7 @@ def _download_bilibili(
         return _do_youtube_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+            fetch_lyrics=fetch_lyrics,
         )
 
     results = rank_bili_results(results)
@@ -1071,7 +1113,8 @@ def _download_bilibili(
     if _ytdlp_download(py, url, output, actual_fmt, actual_bitrate, embed_thumbnail,
                        bili_ua=True, index=1, cookies=cookies):
         if not no_metadata:
-            enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+            enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail,
+                             before_snapshot=before, fetch_lyrics=fetch_lyrics)
         print("\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {"ok": True, "platform": "bilibili", "engine": "yt-dlp",
@@ -1083,7 +1126,8 @@ def _download_bilibili(
     print("\n  yt-dlp download failed (likely 412 Precondition Failed).")
     if _bili_api_download(bvid, output, actual_fmt, actual_bitrate, python=py):
         if not no_metadata:
-            enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+            enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail,
+                             before_snapshot=before, fetch_lyrics=fetch_lyrics)
         print("\n[OK] Download complete (via Bilibili API direct)!")
         print(f"     Files saved to: {output}")
         return {"ok": True, "platform": "bilibili", "engine": "bili-api-direct",
@@ -1096,6 +1140,7 @@ def _download_bilibili(
     result = _do_youtube_download(
         py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
         no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+        fetch_lyrics=fetch_lyrics,
     )
     if result.get("ok"):
         return result
@@ -1108,6 +1153,7 @@ def _download_bilibili(
 def _download_youtube(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
     no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+    fetch_lyrics=True,
 ):
     """YouTube pipeline: Soulseek first → YouTube via yt-dlp search + download."""
     # Tier 1: Soulseek P2P
@@ -1115,6 +1161,7 @@ def _download_youtube(
         py, query, output, fmt, proxy, bitrate, index,
         embed_thumbnail, no_metadata, cookies, before,
         slsk_user, slsk_pass, quick, fallback_platform="YouTube",
+        fetch_lyrics=fetch_lyrics,
     )
     if slsk_result:
         return slsk_result
@@ -1123,6 +1170,7 @@ def _download_youtube(
     result = _do_youtube_download(
         py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
         no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+        fetch_lyrics=fetch_lyrics,
     )
     if result.get("ok"):
         return result
@@ -1132,11 +1180,133 @@ def _download_youtube(
             "error": "All download tiers exhausted (Soulseek, YouTube)"}
 
 
+def _kuwo_quality_for_fmt(fmt):
+    """Map output format to the best Kuwo quality level."""
+    if fmt in ("flac", "wav"):
+        return "lossless"
+    if fmt in ("mp3", "m4a", "opus", "vorbis"):
+        return "exhigh"
+    return "lossless"
+
+
+def _download_kuwo(
+    py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+    no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+    fetch_lyrics=True,
+):
+    """Kuwo pipeline: search → direct CDN download → metadata."""
+    import urllib.error
+    import urllib.request
+
+    print("=" * 60)
+    print("  Platform : Kuwo (酷我音乐)")
+    print(f"  Query    : {query}")
+    print(f"  Format   : {fmt}")
+    print(f"  Output   : {output}")
+    print("=" * 60)
+    print()
+
+    print("[1/3] Searching Kuwo...")
+    results = kuwo_client.search(query, limit=max(index, 5))
+    if not results:
+        print("\n  Kuwo search returned no results.")
+        return {"ok": False, "platform": "kuwo", "query": query,
+                "error": "Kuwo search returned no results"}
+
+    item = results[min(index - 1, len(results) - 1)]
+    music_id = item["music_id"]
+    title = item["title"]
+    artist = item["artist"]
+    dur = item.get("duration", 0)
+    dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
+    print(f"  Found: {artist} - {title}  [{dur_str}]")
+    print(f"  music_id: {music_id}")
+    print()
+
+    quality = _kuwo_quality_for_fmt(fmt)
+    print(f"[2/3] Resolving download URL (quality={quality})...")
+    audio_url = kuwo_client.get_download_url(music_id, quality=quality)
+    if not audio_url:
+        print("  Failed to resolve download URL.")
+        return {"ok": False, "platform": "kuwo", "query": query,
+                "error": "Kuwo download URL resolution failed"}
+    debug_log(f"kuwo url resolved: {audio_url[:80]}...")
+
+    print("[3/3] Downloading audio...")
+    raw_ext = "flac" if quality == "lossless" else "mp3"
+    raw_path = os.path.join(output, f"_kuwo_raw_{music_id}.{raw_ext}")
+
+    req = urllib.request.Request(audio_url)
+    req.add_header("User-Agent", kuwo_client.UA)
+    req.add_header("Referer", "http://www.kuwo.cn/")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            with open(raw_path, "wb") as f:
+                while True:
+                    chunk = r.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+    except Exception as e:
+        print(f"  [!] Kuwo download failed: {e}")
+        if os.path.isfile(raw_path):
+            os.remove(raw_path)
+        return {"ok": False, "platform": "kuwo", "query": query,
+                "error": f"Kuwo download failed: {e}"}
+
+    size_mb = os.path.getsize(raw_path) / (1024 * 1024)
+    if size_mb < 0.1:
+        os.remove(raw_path)
+        print("  [!] Downloaded file too small (<100KB)")
+        return {"ok": False, "platform": "kuwo", "query": query,
+                "error": "Downloaded file too small"}
+    print(f"  Downloaded: {size_mb:.1f} MB")
+
+    actual_fmt = fmt
+    if fmt == "auto":
+        actual_fmt = "flac" if raw_ext == "flac" else "mp3"
+
+    ffmpeg_exe = find_ffmpeg(py)
+    song_name = sanitize_filename(f"{artist} - {title}" if artist else title)
+
+    if ffmpeg_exe and actual_fmt != raw_ext:
+        print(f"  Converting to {actual_fmt}...")
+        final_path = os.path.join(output, f"{song_name}.{actual_fmt}")
+        ok = _ffmpeg_convert(ffmpeg_exe, raw_path, final_path, actual_fmt, bitrate)
+        if not ok:
+            return {"ok": False, "platform": "kuwo", "query": query,
+                    "error": "ffmpeg conversion failed"}
+    else:
+        final_path = os.path.join(output, f"{song_name}.{raw_ext}")
+        if raw_path != final_path:
+            if os.path.isfile(final_path):
+                os.remove(final_path)
+            os.rename(raw_path, final_path)
+
+    print(f"  Saved: {os.path.basename(final_path)}")
+
+    if not no_metadata:
+        enhance_metadata(
+            query, f"{artist} - {title}", output,
+            embed_thumbnail=embed_thumbnail, filepath=final_path,
+            fetch_lyrics=fetch_lyrics,
+        )
+
+    print(f"\n[OK] Download complete!")
+    print(f"     Files saved to: {output}")
+    return {
+        "ok": True, "platform": "kuwo", "engine": "kuwo-api-direct",
+        "query": query, "format": actual_fmt, "output": output,
+        "metadata": not no_metadata,
+    }
+
+
 # ── Platform dispatch table ──────────────────────────────────────────────
 
 _PLATFORM_HANDLERS = {
     "bilibili": _download_bilibili,
     "youtube": _download_youtube,
+    "kuwo": _download_kuwo,
     "ytmusic": "ytmusic",   # handled inline (has its own before_snapshot)
     "soulseek": "soulseek",  # handled inline (no fallback)
 }
@@ -1147,6 +1317,7 @@ def cmd_download(
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
     no_metadata=False, cookies=None, dry_run=False, json_output=False,
     debug=False, slsk_user=None, slsk_pass=None, quick=False,
+    fetch_lyrics=True,
 ):
     """Download a song with automatic platform selection and fallback.
 
@@ -1186,12 +1357,14 @@ def cmd_download(
 
     if is_netease_url(query):
         return _download_netease_url(py, query, fmt, output, proxy, bitrate,
-                                     index, embed_thumbnail, no_metadata, cookies)
+                                     index, embed_thumbnail, no_metadata, cookies,
+                                     fetch_lyrics=fetch_lyrics)
 
     if is_direct_download_url(query):
         debug_log("route: direct url → yt-dlp")
         return _download_direct(py, query, fmt, output, proxy, bitrate,
-                                index, embed_thumbnail, no_metadata, cookies)
+                                index, embed_thumbnail, no_metadata, cookies,
+                                fetch_lyrics=fetch_lyrics)
 
     # ── Search-based platforms ──
     if platform == "auto":
@@ -1208,27 +1381,32 @@ def cmd_download(
         return _try_soulseek_once(
             query, output, fmt, bitrate, embed_thumbnail, no_metadata,
             slsk_user=slsk_user, slsk_pass=slsk_pass, proxy=proxy,
+            fetch_lyrics=fetch_lyrics,
         )
     if handler == "ytmusic":
         return _do_ytmusic_download(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+            fetch_lyrics=fetch_lyrics,
         )
     if callable(handler):
         return handler(
             py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
             no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+            fetch_lyrics=fetch_lyrics,
         )
 
     # Unknown platform — fall back to youtube
     return _download_youtube(
         py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
         no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+        fetch_lyrics=fetch_lyrics,
     )
 
 
 def _download_netease_url(py, query, fmt, output, proxy, bitrate,
-                          index, embed_thumbnail, no_metadata, cookies):
+                          index, embed_thumbnail, no_metadata, cookies,
+                          fetch_lyrics=True):
     """Handle NetEase URL: resolve → direct audio → fallback to Bilibili/YouTube."""
     debug_log("route: netease url → resolve → direct/bilibili/youtube")
     print("[NetEase] Resolving song info from URL...")
@@ -1247,7 +1425,8 @@ def _download_netease_url(py, query, fmt, output, proxy, bitrate,
         before = _list_audio_files(output)
         if _netease_direct_download(song_id, resolved, output, fmt, bitrate, py):
             if not no_metadata:
-                enhance_metadata(resolved, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
+                enhance_metadata(resolved, "", output, embed_thumbnail=embed_thumbnail,
+                                 before_snapshot=before, fetch_lyrics=fetch_lyrics)
             print("\n[OK] Download complete (via NetEase direct)!")
             print(f"     Files saved to: {output}")
             return {"ok": True, "platform": "netease", "engine": "netease-outer-url",
@@ -1260,6 +1439,7 @@ def _download_netease_url(py, query, fmt, output, proxy, bitrate,
     return _download_bilibili(
         py, new_query, output, fmt, proxy, bitrate, index, embed_thumbnail,
         no_metadata, cookies, _list_audio_files(output), None, None, False,
+        fetch_lyrics=fetch_lyrics,
     )
 
 
@@ -1267,6 +1447,7 @@ def _do_soulseek_download(
     query, output, fmt, bitrate, embed_thumbnail, no_metadata,
     slsk_user=None, slsk_pass=None,
     proxy="",
+    fetch_lyrics=True,
 ):
     """Download from Soulseek P2P network.
 
@@ -1303,7 +1484,8 @@ def _do_soulseek_download(
         if not no_metadata:
             enhance_metadata(
                 query, "", output,
-                embed_thumbnail=embed_thumbnail, filepath=path)
+                embed_thumbnail=embed_thumbnail, filepath=path,
+                fetch_lyrics=fetch_lyrics)
         return {
             "ok": True, "platform": "soulseek", "engine": "p2p",
             "query": query, "format": fmt, "output": output,
@@ -1342,7 +1524,8 @@ def _do_soulseek_download(
             print(f"\n[OK] Download complete! -> {path}")
             if not no_metadata:
                 enhance_metadata(query, "", output,
-                                 embed_thumbnail=embed_thumbnail, filepath=path)
+                                 embed_thumbnail=embed_thumbnail, filepath=path,
+                                 fetch_lyrics=fetch_lyrics)
             return {
                 "ok": True, "platform": "soulseek", "engine": "p2p",
                 "query": query, "format": fmt, "output": output,
@@ -1355,6 +1538,7 @@ def _do_soulseek_download(
 def _do_ytmusic_download(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
     no_metadata=False, cookies=None, before_snapshot=None,
+    fetch_lyrics=True,
 ):
     """Download via YouTube Music API search + yt-dlp direct URL.
 
@@ -1426,12 +1610,14 @@ def _do_ytmusic_download(
     return _do_youtube_download(
         py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
         no_metadata=no_metadata, cookies=cookies, before_snapshot=before_snapshot,
+        fetch_lyrics=fetch_lyrics,
     )
 
 
 def _do_youtube_download(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
     no_metadata=False, cookies=None, before_snapshot=None,
+    fetch_lyrics=True,
 ):
     """Download from YouTube via yt-dlp search + download.
     Proxy is optional — users outside China don't need it.
@@ -1468,7 +1654,8 @@ def _do_youtube_download(
     )
     if ok:
         if not no_metadata:
-            enhance_metadata(query, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
+            enhance_metadata(query, "", output, embed_thumbnail=embed_thumbnail,
+                             before_snapshot=before_snapshot, fetch_lyrics=fetch_lyrics)
         print("\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
@@ -1506,6 +1693,7 @@ def _do_youtube_download(
 def _download_direct(
     py, url, fmt, output, proxy, bitrate,
     index, embed_thumbnail, no_metadata, cookies, before_snapshot=None,
+    fetch_lyrics=True,
 ):
     """Download a direct URL (YouTube/SoundCloud/Bandcamp) via yt-dlp.
 
@@ -1551,7 +1739,8 @@ def _download_direct(
     )
     if ok:
         if not no_metadata:
-            enhance_metadata(url, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
+            enhance_metadata(url, "", output, embed_thumbnail=embed_thumbnail,
+                             before_snapshot=before_snapshot, fetch_lyrics=fetch_lyrics)
         print("\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
@@ -1749,7 +1938,7 @@ Examples:
 
     p_search = sub.add_parser("search", help="Search for songs (no download)")
     p_search.add_argument("query", help="Search query")
-    p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek"])
+    p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek", "kuwo"])
     p_search.add_argument("--limit", type=int, default=5)
     p_search.add_argument("--proxy", default=None)
 
@@ -1759,12 +1948,14 @@ Examples:
                         help="Search query for metadata lookup (default: derive from filename)")
     p_meta.add_argument("--no-thumbnail", action="store_true",
                         help="Skip cover art embedding")
+    p_meta.add_argument("--no-lyrics", action="store_true",
+                        help="Skip lyrics fetching")
     p_meta.add_argument("--json", action="store_true",
                         help="Output machine-readable JSON after update")
 
     p_dl = sub.add_parser("download", help="Download a song")
     p_dl.add_argument("query", help="Song name, artist, Spotify URL, or search query")
-    p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek"])
+    p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek", "kuwo"])
     p_dl.add_argument("--format", default="auto",
                       choices=["auto", "mp3", "flac", "m4a", "opus", "wav", "vorbis"],
                       help="Output format. 'auto' probes the source: flac if lossless, else mp3 320K")
@@ -1774,6 +1965,8 @@ Examples:
     p_dl.add_argument("--bitrate", default=None, help="Audio bitrate (e.g. 320K)")
     p_dl.add_argument("--index", type=int, default=1, help="Search result index (1-based)")
     p_dl.add_argument("--no-thumbnail", action="store_true")
+    p_dl.add_argument("--no-lyrics", action="store_true",
+                      help="Skip lyrics fetching")
     p_dl.add_argument("--no-metadata", action="store_true",
                       help="Skip metadata enhancement (multi-source lookup + ID3 tags + rename)")
     p_dl.add_argument("--dry-run", action="store_true",
@@ -1803,6 +1996,7 @@ Examples:
             query=args.query,
             embed_thumbnail=not args.no_thumbnail,
             json_output=args.json,
+            fetch_lyrics=not args.no_lyrics,
         )
     elif args.operation == "download":
         result = cmd_download(
@@ -1822,6 +2016,7 @@ Examples:
             slsk_user=args.slsk_user,
             slsk_pass=args.slsk_pass,
             quick=args.quick,
+            fetch_lyrics=not args.no_lyrics,
         )
         # Post-download: verify file integrity for successful downloads
         if not args.dry_run and isinstance(result, dict) and result.get("ok"):
