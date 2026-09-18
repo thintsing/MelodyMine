@@ -379,7 +379,27 @@ def _ytdlp_download(
 
     env = make_subprocess_env()
 
-    return run_streaming(cmd, env=env) == 0
+    before = _list_audio_files(output)
+    captured = []
+    rc = run_streaming(cmd, env=env, lines_capture=captured)
+
+    if rc != 0:
+        return False
+
+    new_file = find_downloaded_file(output, before=before)
+    if new_file is not None:
+        return True
+
+    if "has already been downloaded" in "\n".join(captured):
+        print(f"    [i] File already existed in {output}; no new download performed.")
+        return True
+
+    print(
+        f"    [!] yt-dlp exited successfully but no new audio file appeared in "
+        f"{output} (source may have been skipped, e.g. \"0 items\"). "
+        "Treating as failure."
+    )
+    return False
 
 
 # ─── Shared ffmpeg conversion ────────────────────────────────────────────
