@@ -27,6 +27,7 @@ from pathlib import Path
 from melodymine_common import (
     BILI_UA,
     DEFAULT_OUTPUT,
+    SPOTDL_RANGE,
     auto_select_platform,
     build_spotdl_proxy_args,
     check_module,
@@ -682,7 +683,7 @@ def cmd_setup():
     if sp:
         print(f"    [OK] Spotify   (via spotDL v{sp})")
     else:
-        print("    [--] Spotify   (optional: pip install 'spotdl>=4.5.0,<5.0.0')")
+        print(f"    [--] Spotify   (optional: pip install 'spotdl{SPOTDL_RANGE}')")
     print()
     return True
 
@@ -1646,7 +1647,7 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
     sp_ver = has_spotdl(python)
     if not sp_ver:
         print("  spotDL not installed, auto-installing...")
-        pip_install(python, ["spotdl>=4.5.0,<5.0.0"])
+        pip_install(python, [f"spotdl{SPOTDL_RANGE}"])
         sp_ver = has_spotdl(python)
     if not sp_ver:
         print("ERROR: spotDL installation failed.")

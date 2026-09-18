@@ -63,6 +63,9 @@ BANDCAMP_RE = re.compile(
 # Unified venv path shared by both helpers so dependencies are installed once.
 VENV_DIR = os.path.join(HOME, ".cache", "melodymine-venv")
 
+# Single source of truth for the supported spotDL pip version range.
+SPOTDL_RANGE = ">=4.5.0,<5.0.0"
+
 # Dependency version compatibility matrix.
 # Format: module_name -> (min_version, max_major, tested_version, severity)
 #   min_version: lowest version that works (inclusive)
