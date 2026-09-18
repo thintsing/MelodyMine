@@ -743,10 +743,13 @@ def is_debug():
     return _DEBUG_ENABLED
 
 
-def run_streaming(cmd, env=None):
+def run_streaming(cmd, env=None, lines_capture=None):
     """Run a subprocess, streaming combined stdout+stderr to print in real time.
 
     Returns the exit code. In debug mode, also tee output to last_run.log.
+    When ``lines_capture`` is provided (a list), each streamed line is
+    appended to it (trailing newline stripped) before printing. Memory is
+    bounded: if the list grows past 500 lines, the oldest lines are dropped.
     """
     if env is None:
         env = make_subprocess_env()
@@ -757,6 +760,10 @@ def run_streaming(cmd, env=None):
         env=env, encoding="utf-8", errors="replace",
     )
     for line in proc.stdout:
+        if lines_capture is not None:
+            lines_capture.append(line.rstrip("\n"))
+            if len(lines_capture) > 500:
+                del lines_capture[0]
         print(line, end="")
         if is_debug():
             debug_log(line.rstrip("\n"))
