@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Unit tests for ytmusic_client — injects fake ytmusicapi before import."""
 
-import json
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 # Inject a fake ytmusicapi module before ytmusic_client is imported,
 # so tests work without the real package installed.

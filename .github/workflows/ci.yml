@@ -16,5 +16,5 @@ jobs:
           python-version: "3.13"
       - run: pip install -r scripts/requirements.txt
       - run: pip install pytest ruff pyyaml
-      - run: ruff check scripts/ tests/ --exit-zero
+      - run: ruff check scripts/ tests/
       - run: python -m pytest tests/ -q

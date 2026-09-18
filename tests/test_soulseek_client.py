@@ -13,7 +13,7 @@ Soulseek connection:
 import os
 import sys
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 # ── Inject fake aioslsk modules before soulseek_client is imported ──
 # aioslsk is a heavy async dependency; tests should run without it.

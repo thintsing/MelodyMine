@@ -44,14 +44,12 @@ from melodymine_common import (
     find_python,
     is_socks_proxy,
     make_subprocess_env,
-    pip_install,
     proxy_to_env,
     run_streaming,
 )
 
 # Metadata enhancement is shared from the metadata module.
 from metadata import enhance_metadata
-
 
 # --- Configuration ---
 
@@ -132,7 +130,7 @@ except Exception as e:
             return []
         return data
     except json.JSONDecodeError:
-        print(f"[SEARCH] Invalid JSON response from Spotify API")
+        print("[SEARCH] Invalid JSON response from Spotify API")
         return []
 
 
@@ -408,7 +406,7 @@ def main():
             query = derive_query_from_filename(filepath)
 
         output_dir = os.path.dirname(filepath) or "."
-        python = _get_python()
+        _get_python()  # ensure spotdl deps present (raises/prints+exits on failure)
         print("=" * 60)
         print("  MelodyMine Spotify helper — Update metadata")
         print("=" * 60)

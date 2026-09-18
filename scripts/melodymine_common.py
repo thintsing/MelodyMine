@@ -363,7 +363,7 @@ def _create_venv(base_python, install_packages, verify_module="yt_dlp", timeout=
             print(f"  [!] venv creation error: {e}")
             return None, None
 
-    print(f"  Installing packages into venv...")
+    print("  Installing packages into venv...")
     pip_install(venv_py, install_packages)
 
     ver = check_module(venv_py, verify_module)
@@ -439,7 +439,7 @@ def find_python(required_module, install_packages):
             env=make_subprocess_env(), encoding="utf-8", errors="replace",
         )
         if ver_check.returncode == 0:
-            print(f"  System Python is externally-managed, creating isolated venv...")
+            print("  System Python is externally-managed, creating isolated venv...")
             venv_py, venv_ver = _create_venv(
                 py, install_packages, verify_module=required_module,
             )

@@ -22,8 +22,12 @@ import re
 import subprocess
 import sys
 import time
-from pathlib import Path
 
+import bili_client
+import metadata as _metadata_mod
+import netease_client
+import soulseek_client
+import ytmusic_client
 from melodymine_common import (
     BILI_UA,
     DEFAULT_OUTPUT,
@@ -45,17 +49,10 @@ from melodymine_common import (
     is_youtube_url,
     make_subprocess_env,
     pip_install,
-    proxy_to_env,
     run_streaming,
     sanitize_filename,
     set_debug,
 )
-
-import bili_client
-import metadata as _metadata_mod
-import netease_client
-import soulseek_client
-import ytmusic_client
 
 # ─── Dependencies ────────────────────────────────────────────────────────
 
@@ -667,7 +664,7 @@ def cmd_setup():
     print("[4/4] Setup complete!")
     print()
     print("  You can now download music:")
-    print(f'    python scripts/music_helper.py download "周杰伦 稻香"')
+    print('    python scripts/music_helper.py download "周杰伦 稻香"')
     print()
     print("  Platform availability:")
     has_yt = check_module(py, "yt_dlp")
@@ -718,7 +715,7 @@ def cmd_check():
     # PySocks (for SOCKS5 proxy)
     socks_ver = check_module(py, "socks")
     if socks_ver:
-        print(f"  [OK]   PySocks:       available (for SOCKS5 proxy)")
+        print("  [OK]   PySocks:       available (for SOCKS5 proxy)")
     else:
         print("  [--]   PySocks:       not installed (auto-installs on first use)")
 
@@ -754,7 +751,7 @@ def cmd_check():
     slsk_pass = os.environ.get("SLSK_PASSWORD", "")
     if slsk_user and slsk_pass:
         print(f"\n  Soulseek P2P: [OK] configured (user: {slsk_user})")
-        print(f"    Downloads prefer Soulseek first for best quality, then fall back to Bilibili/YouTube.")
+        print("    Downloads prefer Soulseek first for best quality, then fall back to Bilibili/YouTube.")
     else:
         if not slsk_user and not slsk_pass:
             tip = "Set SLSK_USERNAME and SLSK_PASSWORD env vars"
@@ -762,9 +759,9 @@ def cmd_check():
             tip = "Set SLSK_USERNAME env var (SLSK_PASSWORD is set)"
         else:
             tip = "Set SLSK_PASSWORD env var (SLSK_USERNAME is set)"
-        print(f"\n  Soulseek P2P: [--] not configured")
+        print("\n  Soulseek P2P: [--] not configured")
         print(f"    {tip} to enable P2P downloads.")
-        print(f"    Without credentials, downloads skip Soulseek automatically.")
+        print("    Without credentials, downloads skip Soulseek automatically.")
 
     # ── External API health probe ──
     print("\n  External API reachability:")
@@ -874,7 +871,6 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
             from collections import Counter
             user_count = Counter(r["username"] for r in results)
             print(f"Found {len(results)} files from {len(user_count)} users:\n")
-            displayed = set()
             for r in results[:limit]:
                 name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
                 size_mb = r["filesize"] / 1024 / 1024
@@ -980,7 +976,7 @@ def _soulseek_with_fallback(py, query, output, fmt, proxy, bitrate, index,
     """Try Soulseek first; if it fails or --quick, fall back to the named platform."""
     if not quick:
         print("=" * 60)
-        print(f"  Platform : Soulseek (P2P) — primary")
+        print("  Platform : Soulseek (P2P) — primary")
         print(f"  Query    : {query}")
         print(f"  Format   : {fmt}")
         print(f"  Output   : {output}")
@@ -1016,7 +1012,7 @@ def _download_bilibili(
 
     # Tier 2: Bilibili wbi search + yt-dlp download
     print("=" * 60)
-    print(f"  Platform : Bilibili (direct, no proxy)")
+    print("  Platform : Bilibili (direct, no proxy)")
     print(f"  Query    : {query}")
     print(f"  Format   : {fmt}")
     print(f"  Output   : {output}")
@@ -1056,7 +1052,7 @@ def _download_bilibili(
                        bili_ua=True, index=1, cookies=cookies):
         if not no_metadata:
             enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
-        print(f"\n[OK] Download complete!")
+        print("\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {"ok": True, "platform": "bilibili", "engine": "yt-dlp",
                 "query": query, "source_url": url, "format": actual_fmt,
@@ -1064,11 +1060,11 @@ def _download_bilibili(
                 "metadata": not no_metadata, "fallback": "bilibili-after-soulseek"}
 
     # Tier 3: Bilibili API direct download
-    print(f"\n  yt-dlp download failed (likely 412 Precondition Failed).")
+    print("\n  yt-dlp download failed (likely 412 Precondition Failed).")
     if _bili_api_download(bvid, output, actual_fmt, actual_bitrate, python=py):
         if not no_metadata:
             enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
-        print(f"\n[OK] Download complete (via Bilibili API direct)!")
+        print("\n[OK] Download complete (via Bilibili API direct)!")
         print(f"     Files saved to: {output}")
         return {"ok": True, "platform": "bilibili", "engine": "bili-api-direct",
                 "query": query, "source_url": url, "format": actual_fmt,
@@ -1076,7 +1072,7 @@ def _download_bilibili(
                 "fallback": "bili-api-direct-after-soulseek"}
 
     # Tier 4: YouTube fallback
-    print(f"\n  Bilibili all tiers failed. Falling back to YouTube...")
+    print("\n  Bilibili all tiers failed. Falling back to YouTube...")
     result = _do_youtube_download(
         py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
         no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
@@ -1084,7 +1080,7 @@ def _download_bilibili(
     if result.get("ok"):
         return result
 
-    print(f"\n  All platforms exhausted. Download failed.")
+    print("\n  All platforms exhausted. Download failed.")
     return {"ok": False, "platform": "bilibili", "query": query,
             "error": "All download tiers exhausted (Soulseek, Bilibili, YouTube)"}
 
@@ -1111,7 +1107,7 @@ def _download_youtube(
     if result.get("ok"):
         return result
 
-    print(f"\n  All platforms exhausted. Download failed.")
+    print("\n  All platforms exhausted. Download failed.")
     return {"ok": False, "platform": "youtube", "query": query,
             "error": "All download tiers exhausted (Soulseek, YouTube)"}
 
@@ -1173,7 +1169,7 @@ def cmd_download(
                                      index, embed_thumbnail, no_metadata, cookies)
 
     if is_direct_download_url(query):
-        debug_log(f"route: direct url → yt-dlp")
+        debug_log("route: direct url → yt-dlp")
         return _download_direct(py, query, fmt, output, proxy, bitrate,
                                 index, embed_thumbnail, no_metadata, cookies)
 
@@ -1232,7 +1228,7 @@ def _download_netease_url(py, query, fmt, output, proxy, bitrate,
         if _netease_direct_download(song_id, resolved, output, fmt, bitrate, py):
             if not no_metadata:
                 enhance_metadata(resolved, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before)
-            print(f"\n[OK] Download complete (via NetEase direct)!")
+            print("\n[OK] Download complete (via NetEase direct)!")
             print(f"     Files saved to: {output}")
             return {"ok": True, "platform": "netease", "engine": "netease-outer-url",
                     "query": resolved, "source_url": query, "format": fmt,
@@ -1263,7 +1259,7 @@ def _do_soulseek_download(
     os.makedirs(output, exist_ok=True)
 
     print("=" * 60)
-    print(f"  Platform : Soulseek (P2P)")
+    print("  Platform : Soulseek (P2P)")
     print(f"  Query    : {query}")
     print(f"  Format   : {fmt}")
     print(f"  Output   : {output}")
@@ -1347,11 +1343,11 @@ def _do_ytmusic_download(
     standard YouTube yt-dlp search path if ytmusic search fails.
     """
     print("=" * 60)
-    print(f"  Platform : YouTube Music (ytmusicapi search)")
+    print("  Platform : YouTube Music (ytmusicapi search)")
     print(f"  Query    : {query}")
     print(f"  Format   : {fmt}")
     print(f"  Output   : {output}")
-    print(f"  Proxy    : none (direct connection)")
+    print("  Proxy    : none (direct connection)")
     print("=" * 60)
     print()
 
@@ -1380,7 +1376,7 @@ def _do_ytmusic_download(
     item = results[min(index - 1, len(results) - 1)]
     video_id = item["videoId"]
     music_url = f"https://music.youtube.com/watch?v={video_id}"
-    print(f"[2/2] Downloading via yt-dlp...")
+    print("[2/2] Downloading via yt-dlp...")
     print(f"  Source: {item['title']}")
     print(f"  URL:    {music_url}")
     print()
@@ -1422,14 +1418,14 @@ def _do_youtube_download(
     """
     search_query = f"ytsearch:{query}"
     print("=" * 60)
-    print(f"  Platform : YouTube")
+    print("  Platform : YouTube")
     print(f"  Query    : {query}")
     print(f"  Format   : {fmt}")
     print(f"  Output   : {output}")
     if proxy:
         print(f"  Proxy    : {proxy}")
     else:
-        print(f"  Proxy    : none (direct connection)")
+        print("  Proxy    : none (direct connection)")
     if cookies:
         print(f"  Cookies  : {cookies}")
     print("=" * 60)
@@ -1453,7 +1449,7 @@ def _do_youtube_download(
     if ok:
         if not no_metadata:
             enhance_metadata(query, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
-        print(f"\n[OK] Download complete!")
+        print("\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
             "ok": True,
@@ -1468,7 +1464,7 @@ def _do_youtube_download(
             "metadata": not no_metadata,
         }
 
-    print(f"\n[FAIL] YouTube download failed.")
+    print("\n[FAIL] YouTube download failed.")
     print("\n--- Common YouTube Issues ---")
     if not proxy:
         print("  1. Network unreachable / timeout")
@@ -1536,7 +1532,7 @@ def _download_direct(
     if ok:
         if not no_metadata:
             enhance_metadata(url, "", output, embed_thumbnail=embed_thumbnail, before_snapshot=before_snapshot)
-        print(f"\n[OK] Download complete!")
+        print("\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {
             "ok": True,
@@ -1571,8 +1567,8 @@ def _netease_direct_download(song_id, song_name, output, fmt, bitrate, python):
     a 404 page. This function returns True on success, False if the song is
     restricted or unavailable.
     """
-    import urllib.request
     import urllib.error
+    import urllib.request
 
     outer_url = f"https://music.163.com/song/media/outer/url?id={song_id}.mp3"
     print("    ↳ Trying NetEase direct audio...")
@@ -1603,7 +1599,7 @@ def _netease_direct_download(song_id, song_name, output, fmt, bitrate, python):
     # We have a real audio stream — download it
     os.makedirs(output, exist_ok=True)
     raw_path = os.path.join(output, f"_netease_raw_{song_id}.mp3")
-    print(f"    Downloading from NetEase CDN...")
+    print("    Downloading from NetEase CDN...")
     try:
         req2 = urllib.request.Request(final_url)
         req2.add_header("User-Agent", BILI_UA)
@@ -1687,7 +1683,7 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
         return {"ok": False, "platform": "spotify", "query": url,
                 "error": f"spotDL exited with code {exit_code}"}
 
-    print(f"\n[OK] Download complete!")
+    print("\n[OK] Download complete!")
     print(f"     Files saved to: {output}")
     return {
         "ok": True,

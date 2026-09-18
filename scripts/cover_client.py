@@ -4,8 +4,8 @@
 import os
 import sys
 import tempfile
-import urllib.request
 import urllib.error
+import urllib.request
 
 
 def download(url, timeout=10):

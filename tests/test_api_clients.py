@@ -8,18 +8,17 @@ Run with:  python -m unittest tests.test_api_clients -v
 import json
 import os
 import sys
-import tempfile
 import unittest
 import urllib.error
-from unittest.mock import patch, MagicMock, mock_open
+from unittest.mock import MagicMock, patch
 
 _SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "scripts")
 sys.path.insert(0, os.path.abspath(_SCRIPTS))
 
 import bili_client
-import netease_client
-import mbrainz_client
 import cover_client
+import mbrainz_client
+import netease_client
 
 
 def _mock_urlopen(json_data=None, text_data=None, status=200, headers=None):

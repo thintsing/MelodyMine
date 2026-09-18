@@ -6,9 +6,9 @@ import json
 import re
 import sys
 import time
-import urllib.request
 import urllib.error
 import urllib.parse
+import urllib.request
 
 from melodymine_common import BILI_UA as UA
 
@@ -178,7 +178,7 @@ def search(query, limit=5, timeout=10):
     if results:
         return results
 
-    print(f"  [!] Bilibili search failed (both WBI and plain)", file=sys.stderr)
+    print("  [!] Bilibili search failed (both WBI and plain)", file=sys.stderr)
     return []
 
 

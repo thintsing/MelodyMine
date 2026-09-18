@@ -3,9 +3,9 @@
 
 import json
 import sys
-import urllib.request
 import urllib.error
 import urllib.parse
+import urllib.request
 
 from melodymine_common import BILI_UA as UA
 
