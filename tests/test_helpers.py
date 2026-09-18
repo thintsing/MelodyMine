@@ -39,16 +39,18 @@ from melodymine_common import (  # noqa: E402
     sanitize_filename,
 )
 from metadata import (  # noqa: E402
-    _is_accompaniment,
-    _score_metadata_candidate,
     _best_metadata_candidate,
     _clean_artist,
+    _is_accompaniment,
     _norm_cn,
+    _score_metadata_candidate,
     find_downloaded_file,
-    list_audio_files as _list_audio_files,
     parse_bili_title,
     parse_search_query,
     rank_bili_results,
+)
+from metadata import (
+    list_audio_files as _list_audio_files,
 )
 from music_helper import (  # noqa: E402
     _auto_fmt_from_codec,
@@ -496,14 +498,14 @@ class TestFindDownloadedFile(unittest.TestCase):
         self.assertNotEqual(find_downloaded_file(self.dir, before=before), old)
 
     def test_no_before_returns_newest_ctime(self):
-        a = self._touch("a.mp3")
+        self._touch("a.mp3")
         time.sleep(0.01)
         b = self._touch("b.mp3")
         # Without a snapshot, the most recently created file wins.
         self.assertEqual(find_downloaded_file(self.dir), b)
 
     def test_before_with_no_new_files_returns_none(self):
-        old = self._touch("old.mp3")
+        self._touch("old.mp3")
         before = _list_audio_files(self.dir)
         self.assertIsNone(find_downloaded_file(self.dir, before=before))
 

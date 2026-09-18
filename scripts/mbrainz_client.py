@@ -4,9 +4,9 @@
 import json
 import sys
 import time
-import urllib.request
 import urllib.error
 import urllib.parse
+import urllib.request
 
 UA = "MelodyMine/1.0 (music-downloader; +https://github.com/thintsing/MelodyMine)"
 

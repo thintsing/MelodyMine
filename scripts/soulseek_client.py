@@ -16,8 +16,10 @@ import os
 import sys
 import time
 
+from melodymine_common import debug_log
+
 # Proxy auto-detection is now unified in melodymine_common.
-from melodymine_common import detect_proxy as _detect_proxy, debug_log
+from melodymine_common import detect_proxy as _detect_proxy
 
 
 def _build_proxied_socket(dest_host, dest_port, proxy_url, timeout=30):
@@ -145,11 +147,17 @@ class _SoulseekSession:
 
     async def __aenter__(self):
         from aioslsk.client import SoulSeekClient
-        from aioslsk.settings import (Settings, CredentialsSettings, NetworkSettings,
-                                       SharesSettings, ServerSettings,
-                                       ReconnectSettings, ListeningSettings,
-                                       ListeningConnectionErrorMode,
-                                       UpnpSettings)
+        from aioslsk.settings import (
+            CredentialsSettings,
+            ListeningConnectionErrorMode,
+            ListeningSettings,
+            NetworkSettings,
+            ReconnectSettings,
+            ServerSettings,
+            Settings,
+            SharesSettings,
+            UpnpSettings,
+        )
 
         settings = Settings(
             credentials=CredentialsSettings(username=self._username, password=self._password),
@@ -169,9 +177,9 @@ class _SoulseekSession:
         self.client = SoulSeekClient(settings)
 
         # ── Monkey-patch: tolerate listening port failure ──
-        from aioslsk.exceptions import ListeningConnectionFailedError
-        from aioslsk.network.connection import ConnectionState, CloseReason
         from aioslsk.exceptions import ConnectionFailedError as ConnFailed
+        from aioslsk.exceptions import ListeningConnectionFailedError
+        from aioslsk.network.connection import CloseReason, ConnectionState
 
         async def _patched_init():
             """Run original init, but don't crash on listening port failure."""
@@ -468,7 +476,7 @@ def download(target_user, remote_path, output_dir, username=None, password=None,
 
     actual_proxy = proxy or _detect_proxy()
     if not actual_proxy:
-        print(f"  No proxy configured (VPS is outside China, direct connection).")
+        print("  No proxy configured (VPS is outside China, direct connection).")
 
     async def _run():
         async with _SoulseekSession(u, p, actual_proxy) as sess:
@@ -543,7 +551,7 @@ def download_best(candidates, output_dir, username=None, password=None, max_retr
 
     actual_proxy = proxy or _detect_proxy()
     if not actual_proxy:
-        print(f"  No proxy configured (VPS is outside China, direct connection).")
+        print("  No proxy configured (VPS is outside China, direct connection).")
 
     os.makedirs(output_dir, exist_ok=True)
 

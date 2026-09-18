@@ -1,0 +1,21 @@
+# MelodyMine ruff config.
+#
+# Goal: a CI gate that catches *real* bugs (unused imports, undefined names,
+# f-string mistakes) — not style noise that would flood the log.
+#
+# Enabled rule families:
+#   F    - pyflakes: unused imports, undefined names, f-string issues  (all real)
+#   UP   - pyupgrade: modernise f-strings, type hints, etc.
+#   I    - isort: import ordering
+#   B023 - loop variable capture (a genuine bug class)
+#
+# Deliberately NOT enabled (kept to a small, signal-first set):
+#   BLE001 - bare `except:` is used a lot in the downloader's fallback
+#            chains on purpose; we keep it and don't treat it as an error.
+#   W/E (pycodestyle) - line-length and style are out of scope for the gate.
+#
+# To grow the rule set later, add rule codes to `select` and run
+# `ruff check scripts/ tests/ --fix` to absorb the mechanical fixes.
+
+[lint]
+select = ["F", "UP", "I", "B023"]

@@ -9,11 +9,12 @@ imageio-ffmpeg>=0.6.0
 
 # Spotify URL support (hard-capped to major 4 — MelodyMine imports spotdl's
 # internal SpotifyClient API, which breaks across major versions).
-# To upgrade: test with the new version, then bump the upper bound here and
-# in scripts/spotify_helper.py (SPOTDL_PACKAGES) and DEP_COMPAT in melodymine_common.py.
+# To upgrade: test with the new version, then bump the range in
+# scripts/melodymine_common.py SPOTDL_RANGE (single source of truth) and DEP_COMPAT.
+# NOTE: authoritative range lives in scripts/melodymine_common.py SPOTDL_RANGE - keep in sync
 spotdl>=4.5.0,<5.0.0
 aioslsk>=1.6.3
 
 # YouTube Music metadata search (optional — music_helper.py falls back to
 # yt-dlp or bilibili search when not installed)
-ytmusicapi>=1.14.0
+ytmusicapi>=1.12.0

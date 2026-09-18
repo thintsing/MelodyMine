@@ -63,6 +63,9 @@ BANDCAMP_RE = re.compile(
 # Unified venv path shared by both helpers so dependencies are installed once.
 VENV_DIR = os.path.join(HOME, ".cache", "melodymine-venv")
 
+# Single source of truth for the supported spotDL pip version range.
+SPOTDL_RANGE = ">=4.5.0,<5.0.0"
+
 # Dependency version compatibility matrix.
 # Format: module_name -> (min_version, max_major, tested_version, severity)
 #   min_version: lowest version that works (inclusive)
@@ -360,7 +363,7 @@ def _create_venv(base_python, install_packages, verify_module="yt_dlp", timeout=
             print(f"  [!] venv creation error: {e}")
             return None, None
 
-    print(f"  Installing packages into venv...")
+    print("  Installing packages into venv...")
     pip_install(venv_py, install_packages)
 
     ver = check_module(venv_py, verify_module)
@@ -436,7 +439,7 @@ def find_python(required_module, install_packages):
             env=make_subprocess_env(), encoding="utf-8", errors="replace",
         )
         if ver_check.returncode == 0:
-            print(f"  System Python is externally-managed, creating isolated venv...")
+            print("  System Python is externally-managed, creating isolated venv...")
             venv_py, venv_ver = _create_venv(
                 py, install_packages, verify_module=required_module,
             )

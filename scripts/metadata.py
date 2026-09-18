@@ -16,19 +16,16 @@ import json
 import os
 import re
 import subprocess
-import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-from melodymine_common import (
-    BILI_UA,
-    find_ffmpeg,
-    sanitize_filename,
-)
 
 import cover_client
 import mbrainz_client
 import netease_client
+from melodymine_common import (
+    find_ffmpeg,
+    sanitize_filename,
+)
 
 # ─── Audio file extensions (canonical source — shared by all modules) ────
 
@@ -324,8 +321,8 @@ def itunes_search(query, limit=5):
     or empty list on failure.
     """
     try:
-        import urllib.request
         import urllib.parse
+        import urllib.request
         url = "https://itunes.apple.com/search?" + urllib.parse.urlencode({
             "term": query, "media": "music", "limit": str(limit)
         })
@@ -446,10 +443,10 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
     existing_artist, existing_title = read_audio_tags(filepath)
     if existing_artist and existing_title:
         print(f"\n  File already tagged: {existing_artist} - {existing_title}")
-        print(f"  Skipping metadata enhancement.")
+        print("  Skipping metadata enhancement.")
         return
 
-    print(f"\n[3/3] Enhancing metadata...")
+    print("\n[3/3] Enhancing metadata...")
 
     # ── Layer 1: Parse search query ──
     artist, title = parse_search_query(search_query)
@@ -461,11 +458,11 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
             print(f"  From Bilibili title: artist={artist}, title={title}")
 
     if not artist or not title:
-        print(f"  [!] Could not determine artist/title, keeping original tags")
+        print("  [!] Could not determine artist/title, keeping original tags")
         return
 
     # ── Layer 2: Multi-source lookup (concurrent) ──
-    print(f"  Looking up album info (MusicBrainz + NetEase + iTunes in parallel)...")
+    print("  Looking up album info (MusicBrainz + NetEase + iTunes in parallel)...")
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         fut_mb = pool.submit(mbrainz_client.lookup, search_query, 5)
@@ -491,15 +488,15 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
     if mb_data:
         print(f"    Best: {mb_data['artist']} - {mb_data['title']} [MusicBrainz (score={best_mb_score})]")
     else:
-        print(f"    No results from MusicBrainz")
+        print("    No results from MusicBrainz")
     if ne_data:
         print(f"    Best: {_clean_artist(ne_data['artist'])} - {ne_data['title']} [NetEase (score={best_ne_score})]")
     else:
-        print(f"    No results from NetEase")
+        print("    No results from NetEase")
     if it_data:
         print(f"    Best: {it_data['artist']} - {it_data['title']} [iTunes (score={best_it_score})]")
     else:
-        print(f"    No results from iTunes")
+        print("    No results from iTunes")
 
     candidates = []
     if mb_data:
@@ -535,23 +532,23 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
     if pic_url:
         print(f"  Cover: available (from {source})")
     else:
-        print(f"  Cover: not available")
+        print("  Cover: not available")
 
     # ── Download album cover ──
     cover_path = None
     if embed_thumbnail and pic_url:
         cover_path = cover_client.download(pic_url)
         if cover_path:
-            print(f"  Downloaded album cover")
+            print("  Downloaded album cover")
     elif not embed_thumbnail:
-        print(f"  Cover: skipped (--no-thumbnail)")
+        print("  Cover: skipped (--no-thumbnail)")
 
     # ── Set ID3 tags with ffmpeg ──
     ok = set_metadata(filepath, title=title, artist=artist, album=album, cover_path=cover_path)
     if ok:
         print(f"  [OK] Metadata embedded: {artist} - {title}" + (f" | {album}" if album else ""))
     else:
-        print(f"  [!] Failed to set metadata (ffmpeg error)")
+        print("  [!] Failed to set metadata (ffmpeg error)")
 
     # ── Rename file ──
     new_base = sanitize_filename(f"{artist} - {title}")
