@@ -12,6 +12,7 @@ Soulseek connection:
 
 import os
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -158,18 +159,24 @@ class TestDetectProxy(unittest.TestCase):
 
 
 class TestDownloadBestCandidateOrdering(unittest.TestCase):
-    """download_best: tries candidates in order, stops on first success."""
+    """download_best: tries candidates in order, stops on first success.
+
+    Uses a real temp directory instead of a hardcoded /out: download_best
+    calls os.makedirs(output_dir), which fails for non-root users on CI.
+    """
 
     def _mkcand(self, username, filename, filesize):
         return {"username": username, "filename": filename, "filesize": filesize}
 
     def test_first_candidate_success(self):
         cands = [self._mkcand("u1", "f1.flac", 100)]
-        with patch.object(soulseek_client, "download", return_value=(True, "/out/f1.flac")) as m:
-            with patch.object(soulseek_client, "_get_creds", return_value=("u", "p")):
-                ok, path = soulseek_client.download_best(cands, "/out")
+        with tempfile.TemporaryDirectory() as out:
+            target = os.path.join(out, "f1.flac")
+            with patch.object(soulseek_client, "download", return_value=(True, target)) as m:
+                with patch.object(soulseek_client, "_get_creds", return_value=("u", "p")):
+                    ok, path = soulseek_client.download_best(cands, out)
         self.assertTrue(ok)
-        self.assertEqual(path, "/out/f1.flac")
+        self.assertEqual(path, target)
         m.assert_called_once()
 
     def test_skips_failed_candidate(self):
@@ -177,28 +184,32 @@ class TestDownloadBestCandidateOrdering(unittest.TestCase):
             self._mkcand("u1", "f1.flac", 100),
             self._mkcand("u2", "f2.flac", 200),
         ]
-        results = [(False, None), (True, "/out/f2.flac")]
-        with patch.object(soulseek_client, "download", side_effect=results) as m:
-            with patch.object(soulseek_client, "_get_creds", return_value=("u", "p")):
-                with patch("time.sleep"):  # skip retry backoff
-                    ok, path = soulseek_client.download_best(cands, "/out", max_retries=1)
+        with tempfile.TemporaryDirectory() as out:
+            target = os.path.join(out, "f2.flac")
+            results = [(False, None), (True, target)]
+            with patch.object(soulseek_client, "download", side_effect=results) as m:
+                with patch.object(soulseek_client, "_get_creds", return_value=("u", "p")):
+                    with patch("time.sleep"):  # skip retry backoff
+                        ok, path = soulseek_client.download_best(cands, out, max_retries=1)
         self.assertTrue(ok)
-        self.assertEqual(path, "/out/f2.flac")
+        self.assertEqual(path, target)
         self.assertEqual(m.call_count, 2)
 
     def test_all_fail_returns_false(self):
         cands = [self._mkcand("u1", "f1.flac", 100)]
-        with patch.object(soulseek_client, "download", return_value=(False, None)):
-            with patch.object(soulseek_client, "_get_creds", return_value=("u", "p")):
-                with patch("time.sleep"):
-                    ok, path = soulseek_client.download_best(cands, "/out", max_retries=2)
+        with tempfile.TemporaryDirectory() as out:
+            with patch.object(soulseek_client, "download", return_value=(False, None)):
+                with patch.object(soulseek_client, "_get_creds", return_value=("u", "p")):
+                    with patch("time.sleep"):
+                        ok, path = soulseek_client.download_best(cands, out, max_retries=2)
         self.assertFalse(ok)
         self.assertIsNone(path)
 
     def test_no_creds_returns_false(self):
         cands = [self._mkcand("u1", "f1.flac", 100)]
-        with patch.object(soulseek_client, "_get_creds", return_value=(None, None)):
-            ok, path = soulseek_client.download_best(cands, "/out")
+        with tempfile.TemporaryDirectory() as out:
+            with patch.object(soulseek_client, "_get_creds", return_value=(None, None)):
+                ok, path = soulseek_client.download_best(cands, out)
         self.assertFalse(ok)
         self.assertIsNone(path)
 
@@ -212,12 +223,13 @@ class TestDownloadBestCandidateOrdering(unittest.TestCase):
         def fake_download(target_user, remote_path, output_dir, username=None,
                           password=None, timeout=120, proxy=""):
             captured.append(timeout)
-            return True, "/out/file"
+            return True, os.path.join(output_dir, "file")
 
-        with patch.object(soulseek_client, "download", side_effect=fake_download):
-            with patch.object(soulseek_client, "_get_creds", return_value=("u", "p")):
-                soulseek_client.download_best([big], "/out", max_retries=1)
-                soulseek_client.download_best([small], "/out", max_retries=1)
+        with tempfile.TemporaryDirectory() as out:
+            with patch.object(soulseek_client, "download", side_effect=fake_download):
+                with patch.object(soulseek_client, "_get_creds", return_value=("u", "p")):
+                    soulseek_client.download_best([big], out, max_retries=1)
+                    soulseek_client.download_best([small], out, max_retries=1)
 
         self.assertEqual(captured, [360, 120])
 
