@@ -1,245 +1,254 @@
+<div align="center">
+
 # MelodyMine
 
-[简体中文](README.zh-CN.md)
+### Multi-Platform Music Downloader & Metadata Engine
 
-Download music from Bilibili, YouTube, YouTube Music, Spotify, and Soulseek (P2P) with automatic search, audio conversion, metadata cleanup, and zero-config dependency setup.
+[![CI](https://img.shields.io/github/actions/workflow/status/thintsing/MelodyMine/ci.yml?branch=main&logo=github&label=CI)](https://github.com/thintsing/MelodyMine/actions)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyTDMgN3YxMGw5IDUgOS01VjdsLTktNXptMCAyLjJMMTguNSA3IDEyIDEwLjIgNS41IDcuMiAxMiA0LjJ6TTUgOC4ybDYgMy4zIDYtMy4zVjE1bC02IDMuMy02LTMuM1Y4LjJ6Ii8+PC9zdmc+)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-10%2B-orange)](#supported-platforms)
+[![Tests](https://img.shields.io/badge/tests-58%20passing-brightgreen?logo=pytest)](tests/)
 
-MelodyMine runs as a standalone CLI or as a file-based skill for AI assistants — WorkBuddy, Hermes, and OpenClaw. It auto-detects each platform's bundled Python runtime (WorkBuddy/Hermes ship one; OpenClaw users install Python once), so first-run setup is a single command on any of them.
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## Features
+Search, download, and tag music from **10+ platforms** — with lossless FLAC, auto metadata, synced lyrics, and zero-config setup. One CLI to rule them all.
 
-- Bilibili for Chinese music queries, using direct WBI search plus `yt-dlp`.
-- YouTube for English and international music queries.
-- YouTube Music catalog search via `ytmusicapi` (no cookies needed for search).
-- Spotify URL downloads through spotDL.
-- Soulseek P2P downloads via `aioslsk` — multi-candidate retry with FLAC→MP3 fallback.
-- Automatic, zero-config setup: auto-detects the host assistant's Python runtime (WorkBuddy/Hermes bundled, uv-managed, or system), installs pip packages, and falls back to `imageio-ffmpeg` for ffmpeg.
-- Shared dependency layer (`melodymine_common.py`) with a unified venv — dependencies install once and are reused across both helpers and every supported assistant.
-- Metadata cleanup with title, artist, album, cover, and `Artist - Title` renaming.
-- Proxy and cookies support for restricted networks or YouTube bot checks.
+</div>
+
+---
+
+## Highlights
+
+| Capability | Details |
+| :--- | :--- |
+| **10+ Sources** | Bilibili, YouTube, YouTube Music, Spotify, Soulseek P2P, Kuwo, Audius, NetEase, SoundCloud, Bandcamp |
+| **Lossless Audio** | FLAC / WAV / ALAC from Kuwo, Soulseek, NetEase — auto-detected per source |
+| **Smart Metadata** | MusicBrainz + NetEase + iTunes multi-source lookup, cover art embedding, auto rename |
+| **Synced Lyrics** | LRCLIB integration — time-synced `.lrc` files saved alongside every track |
+| **Zero Config** | Auto-detects Python runtime, installs deps, finds ffmpeg — one `setup` command |
+| **AI-Native** | Runs as a standalone CLI or as a file-based skill for AI assistants |
+| **Stdlib-First** | API clients use Python stdlib only — minimal dependencies, maximum portability |
+
+## Supported Platforms
+
+| Platform | Type | Auth | Lossless | Notes |
+| :--- | :---: | :---: | :---: | :--- |
+| **Bilibili** | Search + Download | None | Via yt-dlp | Default for Chinese queries; WBI API search |
+| **YouTube** | Search + Download | Optional | Via yt-dlp | Default for international queries; proxy support |
+| **YouTube Music** | Search + Download | None | Via yt-dlp | Catalog search via `ytmusicapi` |
+| **Spotify** | URL Download | None | Via spotDL | Paste any Spotify URL; auto-installs spotDL |
+| **Soulseek** | P2P Search + Download | Username/Pass | Native FLAC | Multi-candidate retry; persistent session |
+| **Kuwo** | Search + Direct Download | None | Native FLAC | Third-party CDN resolution; lossless & high-bitrate |
+| **Audius** | Search + Stream | None | 320kbps MP3 | Web3 music platform; zero auth required |
+| **NetEase** | URL Resolve + Download | None | 128kbps MP3 | CDN direct for free songs; auto fallback |
+| **SoundCloud** | Direct Download | None | Via yt-dlp | Paste URL directly |
+| **Bandcamp** | Direct Download | None | Via yt-dlp | Paste URL directly |
 
 ## Quick Start
 
-From the repository or skill root:
-
 ```bash
+# One-time setup (auto-detects Python, installs deps, finds ffmpeg)
 python scripts/music_helper.py setup
+
+# Download — just type the song name
 python scripts/music_helper.py download "周杰伦 稻香"
 python scripts/music_helper.py download "The Weeknd Blinding Lights"
-```
 
-The only hard prerequisite is Python 3.10+. `setup` installs the Python packages MelodyMine needs.
+# Lossless FLAC from Kuwo
+python scripts/music_helper.py download "周杰伦 稻香" --platform kuwo --format flac
 
-## Common Commands
-
-Download a Chinese song. Auto mode prefers Bilibili:
-
-```bash
-python scripts/music_helper.py download "周杰伦 稻香"
-```
-
-Download an English song. Auto mode prefers YouTube:
-
-```bash
-python scripts/music_helper.py download "The Weeknd Blinding Lights"
-```
-
-Download from a Spotify URL:
-
-```bash
+# Paste any URL
 python scripts/music_helper.py download "https://open.spotify.com/track/..."
-```
-
-Download from a NetEase URL (resolved to song name, then Bilibili/YouTube):
-
-```bash
 python scripts/music_helper.py download "https://music.163.com/song?id=185809"
 ```
 
-Download from a direct URL (YouTube / SoundCloud / Bandcamp):
+## Usage
+
+### Search & Download
 
 ```bash
-python scripts/music_helper.py download "https://www.youtube.com/watch?v=..."
-python scripts/music_helper.py download "https://soundcloud.com/artist/song"
-python scripts/music_helper.py download "https://artist.bandcamp.com/track/song"
-```
+# Search only — see results before committing
+python scripts/music_helper.py search "周杰伦 稻香" --platform kuwo
 
-Search without downloading:
-
-```bash
-python scripts/music_helper.py search "周杰伦 稻香"
-python scripts/music_helper.py search "The Weeknd" --platform youtube
-```
-
-Force a platform:
-
-```bash
-python scripts/music_helper.py download "周杰伦 稻香" --platform bilibili
-python scripts/music_helper.py download "The Weeknd Blinding Lights" --platform youtube
-python scripts/music_helper.py download "Air Supply Complete" --platform soulseek
-```
-
-Choose format, bitrate, output folder, or search result:
-
-```bash
-python scripts/music_helper.py download "周杰伦 稻香" --format flac --bitrate 320K
+# Pick a specific search result
 python scripts/music_helper.py download "稻香" --index 2
+
+# Force a platform
+python scripts/music_helper.py download "周杰伦 稻香" --platform bilibili
+python scripts/music_helper.py download "Air Supply" --platform soulseek
+python scripts/music_music.py download "周杰伦 稻香" --platform kuwo --format flac
+
+# Format & output control
+python scripts/music_helper.py download "周杰伦 稻香" --format mp3 --bitrate 320K
 python scripts/music_helper.py download "Artist Song" --output "D:\Music"
+
+# Proxy & cookies for restricted networks
+python scripts/music_helper.py download "The Weeknd" --proxy socks5://127.0.0.1:7897
+python scripts/music_helper.py download "Artist Song" --cookies "cookies.txt"
+
+# Skip lyrics or metadata
+python scripts/music_helper.py download "Song" --no-lyrics
+python scripts/music_helper.py download "Song" --no-metadata
 ```
 
-Use a proxy for YouTube when direct access fails:
+### Metadata & Lyrics
 
 ```bash
-python scripts/music_helper.py download "The Weeknd Blinding Lights" --proxy socks5://HOST:PORT
-```
-
-Use cookies when YouTube asks for sign-in or bot confirmation:
-
-```bash
-python scripts/music_helper.py download "Artist Song" --cookies "D:\path\cookies.txt"
-```
-
-Update metadata for an already-downloaded file:
-
-```bash
+# Update metadata for an existing file (multi-source lookup + cover + lyrics)
 python scripts/music_helper.py meta "D:\Music\song.mp3"
 python scripts/music_helper.py meta "D:\Music\song.mp3" --query "周杰伦 稻香"
 ```
 
-Check dependencies:
+### Dry Run & JSON
 
 ```bash
-python scripts/music_helper.py check
+# Preview what would happen without downloading
+python scripts/music_helper.py download "周杰伦 稻香" --platform kuwo --dry-run
+
+# Machine-readable output for automation
+python scripts/music_helper.py download "周杰伦 稻香" --json
 ```
 
-## CLI Options
+## CLI Reference
 
-```text
+```
 python scripts/music_helper.py download "query" [options]
 
 Options:
-  --platform {auto,bilibili,youtube,ytmusic,soulseek}
-                                      Default: auto
+  --platform {auto,bilibili,youtube,ytmusic,soulseek,kuwo}
+                                      Platform to search (default: auto)
   --format {auto,mp3,flac,m4a,opus,wav,vorbis}
-                                      Default: auto (flac if lossless, else mp3 320K)
-  --output PATH
-  --proxy URL                         e.g. socks5://host:port
-  --cookies PATH                      cookies.txt for YouTube checks
-  --bitrate RATE                      e.g. 320K
-  --index N                           1-based search result index
-  --no-thumbnail
-  --no-metadata
-  --dry-run                           Preview command without executing
+                                      Output format (default: auto)
+  --output PATH                       Output directory
+  --proxy URL                         Proxy URL (e.g. socks5://host:port)
+  --cookies PATH                      cookies.txt for YouTube
+  --bitrate RATE                      Audio bitrate (e.g. 320K)
+  --index N                           Search result index (1-based)
+  --no-thumbnail                      Skip cover art embedding
+  --no-lyrics                         Skip lyrics fetching
+  --no-metadata                       Skip metadata enhancement
+  --dry-run                           Preview without executing
   --json                              Machine-readable JSON output
-  --slsk-user USER                    Soulseek username (or set SLSK_USERNAME env var)
-  --slsk-pass PASS                    Soulseek password (or set SLSK_PASSWORD env var)
+  --debug                             Write session log for troubleshooting
+  --slsk-user USER                    Soulseek username (or SLSK_USERNAME env)
+  --slsk-pass PASS                    Soulseek password (or SLSK_PASSWORD env)
 
 python scripts/music_helper.py meta "filepath" [options]
 
 Options:
-  --query QUERY                       Search query for metadata lookup (default: derive from filename)
+  --query QUERY                       Search query for metadata lookup
   --no-thumbnail                      Skip cover art embedding
+  --no-lyrics                         Skip lyrics fetching
   --json                              Machine-readable JSON output
 ```
 
 ## Platform Routing
 
-| Input | Default Route | Notes |
-| --- | --- | --- |
-| Chinese query | Soulseek → Bilibili → YouTube | Soulseek first for lossless P2P (~30s timeout), then Bilibili, then YouTube. Use `--quick` to skip Soulseek. |
-| English or non-Chinese query | Soulseek → YouTube | Soulseek first for lossless P2P, then YouTube. Use `--quick` to skip Soulseek. |
-| Spotify URL | spotDL | Auto-installs spotDL on first use if possible. |
-| NetEase URL (`music.163.com`) | NetEase direct → Bilibili/YouTube | Song name resolved via NetEase API. Tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube if copyrighted. |
-| YouTube/SoundCloud/Bandcamp URL | yt-dlp direct | No search step — downloads the URL directly. YouTube may need `--proxy`. |
-| Soulseek P2P (`--platform soulseek`) | Soulseek network | Searches direct from sharers. Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads via single persistent session with multi-candidate retry. Auto-fallback after YouTube. Proxy auto-detected from `ALL_PROXY`/`HTTP_PROXY` env vars or common Clash ports (7897/7890/1080); proxies all connections (server + peer). |
-| Chinese query → YouTube fail → Soulseek | Auto-fallback | When Bilibili & YouTube both fail, Soulseek is tried automatically. |
+| Input | Route | Fallback Chain |
+| :--- | :--- | :--- |
+| Chinese query | Auto → Bilibili | Soulseek → Bilibili → YouTube |
+| English / international query | Auto → YouTube | Soulseek → YouTube |
+| `--platform kuwo` | Kuwo direct | Kuwo search → CDN download |
+| Spotify URL | spotDL | — |
+| NetEase URL | NetEase CDN | NetEase → Bilibili → YouTube |
+| YouTube / SoundCloud / Bandcamp URL | yt-dlp direct | — |
+| `--platform soulseek` | Soulseek P2P | Soulseek → YouTube |
 
-## Advanced Spotify Operations
+## Architecture
 
-Use `scripts/spotify_helper.py` for playlist sync, metadata-only saves, URL resolution, or metadata updates:
-
-```bash
-python scripts/spotify_helper.py sync "https://open.spotify.com/playlist/..." --save-file playlist.spotdl
-python scripts/spotify_helper.py save "https://open.spotify.com/album/..." --save-file album.spotdl
-python scripts/spotify_helper.py url "Artist - Song"
-python scripts/spotify_helper.py meta "D:\Music\song.mp3"
-python scripts/spotify_helper.py meta "D:\Music\song.mp3" --query "Artist - Song"
+```
+┌─────────────────────────────────────────────────────────┐
+│                    music_helper.py                       │
+│              (CLI entry + platform dispatch)             │
+├──────────┬──────────┬──────────┬──────────┬─────────────┤
+│ Bilibili │ YouTube  │  Kuwo    │ Soulseek │  NetEase    │
+│  Pipeline│ Pipeline │ Pipeline │ Pipeline │  Pipeline   │
+├──────────┴──────────┴──────────┴──────────┴─────────────┤
+│                                                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │  metadata.py │  │ lyrics_client│  │ melodymine    │  │
+│  │  (MusicBrainz│  │ (LRCLIB API) │  │ _common.py    │  │
+│  │  + NetEase + │  │ synced .lrc  │  │ (Python/venv/ │  │
+│  │  iTunes +    │  │ plain lyrics │  │  pip/ffmpeg)  │  │
+│  │  cover art)  │  │              │  │               │  │
+│  └─────────────┘  └──────────────┘  └───────────────┘  │
+│                                                         │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
+│  │bili_     │ │kuwo_     │ │audius_   │ │netease_   │  │
+│  │client.py │ │client.py │ │client.py │ │client.py  │  │
+│  │(WBI API) │ │(3rd-party│ │(Audius   │ │(CDN URL)  │  │
+│  │          │ │ CDN API) │ │ REST API)│ │           │  │
+│  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
+│  │ytmusic_  │ │soulseek_ │ │mbrainz_  │ │cover_     │  │
+│  │client.py │ │client.py │ │client.py │ │client.py  │  │
+│  │(ytmusic- │ │(aioslsk  │ │(Music-   │ │(URL→file) │  │
+│  │ api)     │ │ P2P)     │ │ Brainz)  │ │           │  │
+│  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-See `references/usage.md` for spotDL option details and `references/config.md` for spotDL configuration fields.
+## AI Skill Integration
 
-## Install As An AI Skill
+Drop MelodyMine into any AI assistant's skill directory:
 
-Copy this folder to your assistant's skills directory:
-
-| Platform | Example path |
-| --- | --- |
+| Platform | Path |
+| :--- | :--- |
 | WorkBuddy | `~/.workbuddy/skills/melodymine/` |
 | OpenClaw | `~/.openclaw/workspace/skills/melodymine/` |
 | Hermes | `~/.hermes/skills/melodymine/` |
-| Custom | Any directory your assistant scans for file-based skills |
 
-> Runtime note: WorkBuddy and Hermes ship a bundled Python that MelodyMine auto-detects on first run. OpenClaw runs on Node.js and does **not** bundle Python, so OpenClaw users must install Python 3.10+ from python.org before first use — `setup` will then locate it.
-
-Then restart the assistant and ask naturally:
+Then just ask naturally:
 
 ```text
-下载周杰伦的稻香
+下载周杰伦的稻香，要无损音质
 Download Blinding Lights by The Weeknd
-下载这个 https://open.spotify.com/track/...
+下载这个 Spotify 链接 https://open.spotify.com/track/...
 ```
 
-The assistant should read `SKILL.md`, run setup if needed, execute the download command, and report the saved path.
+## Testing
 
-## Troubleshooting
+```bash
+# Run all 58 tests
+python -m pytest tests/ -v
 
-| Problem | Fix |
-| --- | --- |
-| No Python found | Install Python 3.10+ from python.org, then rerun setup. |
-| Bilibili `412 Precondition Failed` | Retry after a few seconds; the helper already retries once. |
-| YouTube timeout | Retry with `--proxy socks5://HOST:PORT` if you have a proxy. |
-| YouTube asks for sign-in or bot confirmation | Export YouTube cookies to cookies.txt and pass `--cookies PATH`. |
-| Spotify `KeyError: 'uri'` | Search by song name instead of Spotify URL, or use `spotify_helper.py --use-official-api` when appropriate. |
-| Metadata is wrong | Retry with a more exact `Artist Song` query or add `--no-metadata`. |
+# Run a specific test module
+python -m unittest tests.test_new_clients -v
+```
 
 ## File Structure
 
-```text
+```
 MelodyMine/
-├── SKILL.md
-├── README.md
 ├── scripts/
+│   ├── music_helper.py        # CLI entry + platform dispatch + download pipelines
 │   ├── melodymine_common.py   # Shared infra: Python/venv/pip/ffmpeg/proxy detection
-│   ├── music_helper.py       # Main setup/search/download helper
-│   ├── spotify_helper.py     # Advanced spotDL operations
-│   ├── soulseek_client.py    # Soulseek P2P search/download (aioslsk)
-│   ├── bili_client.py        # Bilibili WBI API search (stdlib only)
-│   ├── netease_client.py     # NetEase Cloud Music API client (stdlib only)
-│   ├── ytmusic_client.py     # YouTube Music API search (ytmusicapi)
-│   ├── mbrainz_client.py     # MusicBrainz metadata lookup (stdlib only)
-│   ├── cover_client.py       # Cover art downloader (stdlib only)
-│   └── requirements.txt
-├── tests/
-│   ├── test_helpers.py       # Unit tests for pure functions (stdlib unittest)
-│   ├── test_api_clients.py   # Unit tests for API client modules
-│   ├── test_ytmusic_client.py# Unit tests for YouTube Music search
-│   └── test_soulseek_client.py # Unit tests for Soulseek client helpers
-└── references/
-    ├── usage.md              # spotDL CLI reference
-    └── config.md             # spotDL config reference
+│   ├── metadata.py            # Multi-source metadata (MusicBrainz + NetEase + iTunes)
+│   ├── spotify_helper.py      # Advanced spotDL operations (playlist sync, URL resolve)
+│   ├── bili_client.py         # Bilibili WBI API search (stdlib only)
+│   ├── kuwo_client.py         # Kuwo Music search + CDN download URL (stdlib only)
+│   ├── audius_client.py       # Audius Web3 music search + stream (stdlib only)
+│   ├── kugou_client.py        # Kugou Music search + download (stdlib only)
+│   ├── migu_client.py         # Migu Music search + download (stdlib only)
+│   ├── netease_client.py      # NetEase Cloud Music API (stdlib only)
+│   ├── ytmusic_client.py      # YouTube Music API search (ytmusicapi)
+│   ├── soulseek_client.py     # Soulseek P2P search/download (aioslsk)
+│   ├── lyrics_client.py       # LRCLIB lyrics API — synced + plain (stdlib only)
+│   ├── mbrainz_client.py      # MusicBrainz metadata lookup (stdlib only)
+│   └── cover_client.py        # Cover art downloader (stdlib only)
+├── tests/                     # 58 unit tests (stdlib unittest + mocked HTTP)
+├── .github/workflows/ci.yml   # GitHub Actions CI (ruff + pytest)
+├── SKILL.md                   # AI assistant skill definition
+└── references/                # spotDL CLI & config reference docs
 ```
 
 ## Disclaimer
 
-MelodyMine is for **personal learning and archival use only**. Downloading copyrighted audio may be illegal in your jurisdiction regardless of intent. Do not distribute, share, or monetize downloaded files. You are solely responsible for complying with your local laws and the terms of service of Bilibili, YouTube, and Spotify.
+MelodyMine is for **personal learning and archival use only**. Downloading copyrighted audio may be illegal in your jurisdiction. Do not distribute, share, or monetize downloaded files. You are solely responsible for complying with your local laws and the terms of service of each platform.
 
-This project:
-- does not host, store, or transmit any copyrighted content,
-- does not bypass digital rights management (DRM),
-- is not affiliated with or endorsed by Bilibili, YouTube, Spotify, NetEase, Apple, or MusicBrainz.
-
-If you are a rights holder and believe this tool facilitates infringement, open an issue. The maintainers will cooperate.
+This project does not host, store, or transmit any copyrighted content, does not bypass DRM, and is not affiliated with or endorsed by any of the mentioned platforms.
 
 ## License
 
-MIT. See `LICENSE`.
+MIT

@@ -1,245 +1,254 @@
+<div align="center">
+
 # MelodyMine
 
-[English](README.md)
+### 多平台音乐下载 & 元数据引擎
 
-从 Bilibili、YouTube、YouTube Music、Spotify 和 Soulseek（P2P）下载音乐，支持自动搜索、音频转换、元数据清理和零配置依赖安装。
+[![CI](https://img.shields.io/github/actions/workflow/status/thintsing/MelodyMine/ci.yml?branch=main&logo=github&label=CI)](https://github.com/thintsing/MelodyMine/actions)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyTDMgN3YxMGw5IDUgOS01VjdsLTktNXptMCAyLjJMMTguNSA3IDEyIDEwLjIgNS41IDcuMiAxMiA0LjJ6TTUgOC4ybDYgMy4zIDYtMy4zVjE1bC02IDMuMy02LTMuM1Y4LjJ6Ii8+PC9zdmc+)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platforms-10%2B-orange)](#支持平台)
+[![Tests](https://img.shields.io/badge/tests-58%20passing-brightgreen?logo=pytest)](tests/)
 
-MelodyMine 可以作为独立 CLI 运行，也可以作为 AI 助手的文件型 skill（WorkBuddy、Hermes 和 OpenClaw）。它会自动检测各平台自带的 Python 运行时（WorkBuddy/Hermes 自带；OpenClaw 用户需安装一次 Python），因此任何平台首次运行都只需要一条命令。
+[English](README.md) | [简体中文](README.zh-CN.md)
 
-## 功能特性
+从 **10+ 平台**搜索、下载、标记音乐 —— 支持无损 FLAC、自动元数据、同步歌词、零配置启动。一个 CLI 搞定一切。
 
-- 中文音乐查询走 Bilibili，使用直连 WBI 搜索 + `yt-dlp`。
-- 英文与国际音乐查询走 YouTube。
-- 通过 `ytmusicapi` 搜索 YouTube Music 曲库（搜索无需 cookies）。
-- 通过 spotDL 下载 Spotify URL。
-- 通过 `aioslsk` 进行 Soulseek P2P 下载，支持多候选重试和 FLAC→MP3 回退。
-- 零配置自动安装：自动检测宿主助手的 Python 运行时（WorkBuddy/Hermes 自带、uv 管理或系统 Python），安装 pip 包，并回退到 `imageio-ffmpeg` 获取 ffmpeg。
-- 共享依赖层（`melodymine_common.py`）+ 统一虚拟环境：依赖只安装一次，即可在两个 helper 和所有支持的助手之间复用。
-- 元数据清理：标题、艺术家、专辑、封面，并自动重命名为 `Artist - Title` 格式。
-- 支持代理和 cookies，应对受限网络或 YouTube 机器人验证。
+</div>
+
+---
+
+## 核心能力
+
+| 能力 | 说明 |
+| :--- | :--- |
+| **10+ 音源** | Bilibili、YouTube、YouTube Music、Spotify、Soulseek P2P、酷我、Audius、网易云、SoundCloud、Bandcamp |
+| **无损音质** | 酷我 / Soulseek / 网易云原生 FLAC — 按音源自动检测 |
+| **智能元数据** | MusicBrainz + 网易云 + iTunes 多源查询，封面嵌入，自动重命名 |
+| **同步歌词** | LRCLIB 集成 — 为每首歌曲生成时间同步的 `.lrc` 歌词文件 |
+| **零配置** | 自动检测 Python 运行时、安装依赖、查找 ffmpeg — 一条 `setup` 命令搞定 |
+| **AI 原生** | 可作为独立 CLI 运行，也可作为 AI 助手的文件型 Skill |
+| **标准库优先** | API 客户端仅使用 Python 标准库 — 最少依赖，最大可移植性 |
+
+## 支持平台
+
+| 平台 | 类型 | 认证 | 无损 | 说明 |
+| :--- | :---: | :---: | :---: | :--- |
+| **Bilibili** | 搜索 + 下载 | 无需 | 经 yt-dlp | 中文查询默认平台；WBI API 搜索 |
+| **YouTube** | 搜索 + 下载 | 可选 | 经 yt-dlp | 国际查询默认平台；支持代理 |
+| **YouTube Music** | 搜索 + 下载 | 无需 | 经 yt-dlp | 通过 `ytmusicapi` 搜索曲库 |
+| **Spotify** | URL 下载 | 无需 | 经 spotDL | 粘贴 Spotify 链接即可；自动安装 spotDL |
+| **Soulseek** | P2P 搜索 + 下载 | 用户名/密码 | 原生 FLAC | 多候选重试；持久会话 |
+| **酷我音乐** | 搜索 + 直接下载 | 无需 | 原生 FLAC | 第三方 CDN 解析；支持无损 & 高码率 |
+| **Audius** | 搜索 + 串流 | 无需 | 320kbps MP3 | Web3 音乐平台；零认证 |
+| **网易云音乐** | URL 解析 + 下载 | 无需 | 128kbps MP3 | 免费歌曲 CDN 直连；自动回退 |
+| **SoundCloud** | 直接下载 | 无需 | 经 yt-dlp | 粘贴 URL 直接下载 |
+| **Bandcamp** | 直接下载 | 无需 | 经 yt-dlp | 粘贴 URL 直接下载 |
 
 ## 快速开始
 
-在仓库或 skill 根目录下执行：
-
 ```bash
+# 一次性初始化（自动检测 Python、安装依赖、查找 ffmpeg）
 python scripts/music_helper.py setup
+
+# 下载 —— 输入歌名即可
 python scripts/music_helper.py download "周杰伦 稻香"
 python scripts/music_helper.py download "The Weeknd Blinding Lights"
-```
 
-唯一的前置要求是 Python 3.10+。`setup` 命令会自动安装 MelodyMine 所需的 Python 包。
+# 从酷我下载无损 FLAC
+python scripts/music_helper.py download "周杰伦 稻香" --platform kuwo --format flac
 
-## 常用命令
-
-下载中文歌曲（自动模式优先使用 Bilibili）：
-
-```bash
-python scripts/music_helper.py download "周杰伦 稻香"
-```
-
-下载英文歌曲（自动模式优先使用 YouTube）：
-
-```bash
-python scripts/music_helper.py download "The Weeknd Blinding Lights"
-```
-
-从 Spotify URL 下载：
-
-```bash
+# 粘贴任意链接
 python scripts/music_helper.py download "https://open.spotify.com/track/..."
-```
-
-从网易云音乐 URL 下载（先解析歌曲名，再走 Bilibili/YouTube）：
-
-```bash
 python scripts/music_helper.py download "https://music.163.com/song?id=185809"
 ```
 
-从直接链接下载（YouTube / SoundCloud / Bandcamp）：
+## 使用指南
+
+### 搜索 & 下载
 
 ```bash
-python scripts/music_helper.py download "https://www.youtube.com/watch?v=..."
-python scripts/music_helper.py download "https://soundcloud.com/artist/song"
-python scripts/music_helper.py download "https://artist.bandcamp.com/track/song"
-```
+# 仅搜索 —— 先看结果再决定
+python scripts/music_helper.py search "周杰伦 稻香" --platform kuwo
 
-只搜索不下载：
-
-```bash
-python scripts/music_helper.py search "周杰伦 稻香"
-python scripts/music_helper.py search "The Weeknd" --platform youtube
-```
-
-强制指定平台：
-
-```bash
-python scripts/music_helper.py download "周杰伦 稻香" --platform bilibili
-python scripts/music_helper.py download "The Weeknd Blinding Lights" --platform youtube
-python scripts/music_helper.py download "Air Supply Complete" --platform soulseek
-```
-
-选择格式、码率、输出目录或搜索结果序号：
-
-```bash
-python scripts/music_helper.py download "周杰伦 稻香" --format flac --bitrate 320K
+# 选择指定搜索结果
 python scripts/music_helper.py download "稻香" --index 2
+
+# 强制指定平台
+python scripts/music_helper.py download "周杰伦 稻香" --platform bilibili
+python scripts/music_helper.py download "Air Supply" --platform soulseek
+python scripts/music_helper.py download "周杰伦 稻香" --platform kuwo --format flac
+
+# 格式 & 输出控制
+python scripts/music_helper.py download "周杰伦 稻香" --format mp3 --bitrate 320K
 python scripts/music_helper.py download "Artist Song" --output "D:\Music"
+
+# 代理 & Cookies（受限网络）
+python scripts/music_helper.py download "The Weeknd" --proxy socks5://127.0.0.1:7897
+python scripts/music_helper.py download "Artist Song" --cookies "cookies.txt"
+
+# 跳过歌词或元数据
+python scripts/music_helper.py download "Song" --no-lyrics
+python scripts/music_helper.py download "Song" --no-metadata
 ```
 
-当 YouTube 直接访问失败时使用代理：
+### 元数据 & 歌词
 
 ```bash
-python scripts/music_helper.py download "The Weeknd Blinding Lights" --proxy socks5://HOST:PORT
-```
-
-当 YouTube 要求登录或机器人验证时使用 cookies：
-
-```bash
-python scripts/music_helper.py download "Artist Song" --cookies "D:\path\cookies.txt"
-```
-
-为已下载的文件更新元数据：
-
-```bash
+# 为已下载文件更新元数据（多源查询 + 封面 + 歌词）
 python scripts/music_helper.py meta "D:\Music\song.mp3"
 python scripts/music_helper.py meta "D:\Music\song.mp3" --query "周杰伦 稻香"
 ```
 
-检查依赖：
+### 预演 & JSON 输出
 
 ```bash
-python scripts/music_helper.py check
+# 预演模式 —— 只看会做什么，不实际下载
+python scripts/music_helper.py download "周杰伦 稻香" --platform kuwo --dry-run
+
+# 机器可读 JSON 输出（用于自动化）
+python scripts/music_helper.py download "周杰伦 稻香" --json
 ```
 
-## CLI 选项
+## CLI 参考
 
-```text
+```
 python scripts/music_helper.py download "query" [options]
 
 选项：
-  --platform {auto,bilibili,youtube,ytmusic,soulseek}
-                                      默认：auto
+  --platform {auto,bilibili,youtube,ytmusic,soulseek,kuwo}
+                                      搜索平台（默认：auto）
   --format {auto,mp3,flac,m4a,opus,wav,vorbis}
-                                      默认：auto（无损源输出 flac，否则 mp3 320K）
-  --output PATH
-  --proxy URL                         例如 socks5://host:port
-  --cookies PATH                      用于 YouTube 验证的 cookies.txt
-  --bitrate RATE                      例如 320K
-  --index N                           搜索结果序号，从 1 开始
-  --no-thumbnail
-  --no-metadata
-  --dry-run                           预览命令而不执行
-  --json                              输出机器可读的 JSON
-  --slsk-user USER                    Soulseek 用户名（或设置 SLSK_USERNAME 环境变量）
-  --slsk-pass PASS                    Soulseek 密码（或设置 SLSK_PASSWORD 环境变量）
+                                      输出格式（默认：auto）
+  --output PATH                       输出目录
+  --proxy URL                         代理地址（如 socks5://host:port）
+  --cookies PATH                      YouTube cookies.txt
+  --bitrate RATE                      音频码率（如 320K）
+  --index N                           搜索结果序号（从 1 开始）
+  --no-thumbnail                      跳过封面嵌入
+  --no-lyrics                         跳过歌词获取
+  --no-metadata                       跳过元数据增强
+  --dry-run                           预演模式
+  --json                              机器可读 JSON 输出
+  --debug                             写入会话日志用于排查
+  --slsk-user USER                    Soulseek 用户名（或 SLSK_USERNAME 环境变量）
+  --slsk-pass PASS                    Soulseek 密码（或 SLSK_PASSWORD 环境变量）
 
 python scripts/music_helper.py meta "filepath" [options]
 
 选项：
-  --query QUERY                       元数据查询关键词（默认从文件名推断）
+  --query QUERY                       元数据查询关键词
   --no-thumbnail                      跳过封面嵌入
-  --json                              输出机器可读的 JSON
+  --no-lyrics                         跳过歌词获取
+  --json                              机器可读 JSON 输出
 ```
 
 ## 平台路由
 
-| 输入 | 默认路由 | 说明 |
-| --- | --- | --- |
-| 中文查询 | Soulseek → Bilibili → YouTube | 优先通过 Soulseek 获取无损 P2P 资源（约 30s 超时），次选 Bilibili，最后 YouTube。使用 `--quick` 可跳过 Soulseek。 |
-| 英文或非中文查询 | Soulseek → YouTube | 优先通过 Soulseek 获取无损 P2P 资源，次选 YouTube。使用 `--quick` 可跳过 Soulseek。 |
-| Spotify URL | spotDL | 首次使用时会自动安装 spotDL。 |
-| 网易云音乐 URL（`music.163.com`） | 网易云直连 → Bilibili/YouTube | 通过网易云 API 获取歌曲名。免费歌曲先尝试网易云 CDN 直连，版权受限时回退 Bilibili/YouTube。 |
-| YouTube/SoundCloud/Bandcamp URL | yt-dlp 直连 | 无需搜索，直接下载 URL。YouTube 可能需要 `--proxy`。 |
-| Soulseek P2P（`--platform soulseek`） | Soulseek 网络 | 直接从分享者搜索下载。需要设置 `SLSK_USERNAME` 和 `SLSK_PASSWORD` 环境变量。通过单一会话多候选重试下载。自动回退到 YouTube。代理自动从 `ALL_PROXY`/`HTTP_PROXY` 环境变量或常见 Clash 端口（7897/7890/1080）检测；会代理所有连接（服务器 + 节点）。 |
-| 中文查询 → YouTube 失败 → Soulseek | 自动回退 | 当 Bilibili 和 YouTube 都失败时，会自动尝试 Soulseek。 |
+| 输入 | 路由 | 回退链 |
+| :--- | :--- | :--- |
+| 中文查询 | Auto → Bilibili | Soulseek → Bilibili → YouTube |
+| 英文 / 国际查询 | Auto → YouTube | Soulseek → YouTube |
+| `--platform kuwo` | 酷我直连 | 酷我搜索 → CDN 下载 |
+| Spotify URL | spotDL | — |
+| 网易云 URL | 网易云 CDN | 网易云 → Bilibili → YouTube |
+| YouTube / SoundCloud / Bandcamp URL | yt-dlp 直连 | — |
+| `--platform soulseek` | Soulseek P2P | Soulseek → YouTube |
 
-## 高级 Spotify 操作
+## 架构
 
-使用 `scripts/spotify_helper.py` 进行歌单同步、仅保存元数据、URL 解析或更新元数据：
-
-```bash
-python scripts/spotify_helper.py sync "https://open.spotify.com/playlist/..." --save-file playlist.spotdl
-python scripts/spotify_helper.py save "https://open.spotify.com/album/..." --save-file album.spotdl
-python scripts/spotify_helper.py url "Artist - Song"
-python scripts/spotify_helper.py meta "D:\Music\song.mp3"
-python scripts/spotify_helper.py meta "D:\Music\song.mp3" --query "Artist - Song"
+```
+┌─────────────────────────────────────────────────────────┐
+│                    music_helper.py                       │
+│              (CLI 入口 + 平台调度 + 下载管线)              │
+├──────────┬──────────┬──────────┬──────────┬─────────────┤
+│ Bilibili │ YouTube  │  酷我    │ Soulseek │  网易云     │
+│  管线    │  管线    │  管线    │  管线    │  管线       │
+├──────────┴──────────┴──────────┴──────────┴─────────────┤
+│                                                         │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────┐  │
+│  │  metadata.py │  │ lyrics_client│  │ melodymine    │  │
+│  │  (MusicBrainz│  │ (LRCLIB API) │  │ _common.py    │  │
+│  │  + 网易云 +  │  │ 同步歌词     │  │ (Python/venv/ │  │
+│  │  iTunes +   │  │ 普通歌词     │  │  pip/ffmpeg)  │  │
+│  │  封面下载)   │  │              │  │               │  │
+│  └─────────────┘  └──────────────┘  └───────────────┘  │
+│                                                         │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
+│  │bili_     │ │kuwo_     │ │audius_   │ │netease_   │  │
+│  │client.py │ │client.py │ │client.py │ │client.py  │  │
+│  │(WBI API) │ │(第三方   │ │(Audius   │ │(CDN URL)  │  │
+│  │          │ │ CDN API) │ │ REST API)│ │           │  │
+│  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌───────────┐  │
+│  │ytmusic_  │ │soulseek_ │ │mbrainz_  │ │cover_     │  │
+│  │client.py │ │client.py │ │client.py │ │client.py  │  │
+│  │(ytmusic- │ │(aioslsk  │ │(Music-   │ │(URL→文件) │  │
+│  │ api)     │ │ P2P)     │ │ Brainz)  │ │           │  │
+│  └──────────┘ └──────────┘ └──────────┘ └───────────┘  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-spotDL 选项详情请参阅 `references/usage.md`，配置字段请参阅 `references/config.md`。
+## AI Skill 集成
 
-## 安装为 AI Skill
+将 MelodyMine 复制到 AI 助手的 skill 目录：
 
-将此文件夹复制到助手的 skill 目录：
-
-| 平台 | 示例路径 |
-| --- | --- |
+| 平台 | 路径 |
+| :--- | :--- |
 | WorkBuddy | `~/.workbuddy/skills/melodymine/` |
 | OpenClaw | `~/.openclaw/workspace/skills/melodymine/` |
 | Hermes | `~/.hermes/skills/melodymine/` |
-| 自定义 | 助手扫描文件型 skill 的任意目录 |
 
-> 运行时说明：WorkBuddy 和 Hermes 自带 Python，MelodyMine 会在首次运行时自动检测。OpenClaw 运行在 Node.js 上，**不自带 Python**，因此 OpenClaw 用户必须先从 python.org 安装 Python 3.10+，然后 `setup` 命令会找到它。
-
-然后重启助手，用自然语言发出请求：
+然后用自然语言直接说：
 
 ```text
-下载周杰伦的稻香
+下载周杰伦的稻香，要无损音质
 Download Blinding Lights by The Weeknd
-下载这个 https://open.spotify.com/track/...
+下载这个 Spotify 链接 https://open.spotify.com/track/...
 ```
 
-助手会读取 `SKILL.md`，在需要时运行 setup，执行下载命令，并报告保存路径。
+## 测试
 
-## 故障排除
+```bash
+# 运行全部 58 个测试
+python -m pytest tests/ -v
 
-| 问题 | 解决方案 |
-| --- | --- |
-| 找不到 Python | 从 python.org 安装 Python 3.10+，然后重新运行 setup。 |
-| Bilibili `412 Precondition Failed` | 稍等几秒后重试；helper 内部已经重试一次。 |
-| YouTube 超时 | 如有代理，使用 `--proxy socks5://HOST:PORT` 重试。 |
-| YouTube 要求登录或机器人验证 | 将 YouTube cookies 导出为 cookies.txt，然后用 `--cookies PATH` 传入。 |
-| Spotify `KeyError: 'uri'` | 改用歌曲名搜索，或在合适场景下使用 `spotify_helper.py --use-official-api`。 |
-| 元数据错误 | 用更精确的 `Artist Song` 查询重试，或添加 `--no-metadata`。 |
+# 运行特定测试模块
+python -m unittest tests.test_new_clients -v
+```
 
 ## 文件结构
 
-```text
+```
 MelodyMine/
-├── SKILL.md
-├── README.md
 ├── scripts/
-│   ├── melodymine_common.py   # 共享基础设施：Python/venv/pip/ffmpeg/代理 检测
-│   ├── music_helper.py       # 主 setup/search/download helper
-│   ├── spotify_helper.py     # 高级 spotDL 操作
-│   ├── soulseek_client.py    # Soulseek P2P 搜索/下载（aioslsk）
-│   ├── bili_client.py        # Bilibili WBI API 搜索（仅标准库）
-│   ├── netease_client.py     # 网易云音乐 API 客户端（仅标准库）
-│   ├── ytmusic_client.py     # YouTube Music API 搜索（ytmusicapi）
-│   ├── mbrainz_client.py     # MusicBrainz 元数据查询（仅标准库）
-│   ├── cover_client.py       # 封面下载（仅标准库）
-│   └── requirements.txt
-├── tests/
-│   ├── test_helpers.py       # 纯函数单元测试（标准库 unittest）
-│   ├── test_api_clients.py   # API 客户端模块单元测试
-│   ├── test_ytmusic_client.py# YouTube Music 搜索单元测试
-│   └── test_soulseek_client.py # Soulseek 客户端 helper 单元测试
-└── references/
-    ├── usage.md              # spotDL CLI 参考
-    └── config.md             # spotDL 配置参考
+│   ├── music_helper.py        # CLI 入口 + 平台调度 + 下载管线
+│   ├── melodymine_common.py   # 共享基础设施：Python/venv/pip/ffmpeg/代理检测
+│   ├── metadata.py            # 多源元数据（MusicBrainz + 网易云 + iTunes）
+│   ├── spotify_helper.py      # 高级 spotDL 操作（歌单同步、URL 解析）
+│   ├── bili_client.py         # Bilibili WBI API 搜索（仅标准库）
+│   ├── kuwo_client.py         # 酷我音乐搜索 + CDN 下载（仅标准库）
+│   ├── audius_client.py       # Audius Web3 音乐搜索 + 串流（仅标准库）
+│   ├── kugou_client.py        # 酷狗音乐搜索 + 下载（仅标准库）
+│   ├── migu_client.py         # 咪咕音乐搜索 + 下载（仅标准库）
+│   ├── netease_client.py      # 网易云音乐 API（仅标准库）
+│   ├── ytmusic_client.py      # YouTube Music API 搜索（ytmusicapi）
+│   ├── soulseek_client.py     # Soulseek P2P 搜索/下载（aioslsk）
+│   ├── lyrics_client.py       # LRCLIB 歌词 API — 同步 + 普通（仅标准库）
+│   ├── mbrainz_client.py      # MusicBrainz 元数据查询（仅标准库）
+│   └── cover_client.py        # 封面下载（仅标准库）
+├── tests/                     # 58 个单元测试（标准库 unittest + 模拟 HTTP）
+├── .github/workflows/ci.yml   # GitHub Actions CI（ruff + pytest）
+├── SKILL.md                   # AI 助手 Skill 定义
+└── references/                # spotDL CLI & 配置参考文档
 ```
 
 ## 免责声明
 
-MelodyMine 仅用于**个人学习和归档**。下载受版权保护的音频可能在您所在司法管辖区违法，无论意图如何。请勿分发、分享或 monetize 下载的文件。您有责任遵守当地法律以及 Bilibili、YouTube 和 Spotify 的服务条款。
+MelodyMine 仅用于**个人学习和归档**。下载受版权保护的音频可能在您所在司法管辖区违法。请勿分发、分享或用于商业目的。您有责任遵守当地法律及各平台的服务条款。
 
-本项目：
-- 不托管、存储或传输任何受版权保护的内容，
-- 不绕过数字版权管理（DRM），
-- 与 Bilibili、YouTube、Spotify、网易云音乐、Apple 或 MusicBrainz 无关联或代言关系。
-
-如果您是权利持有人并认为该工具促进了侵权行为，请提交 issue。维护者将配合处理。
+本项目不托管、存储或传输任何受版权保护的内容，不绕过数字版权管理（DRM），与上述任何平台无关联或代言关系。
 
 ## 许可证
 
-MIT。详见 `LICENSE`。
+MIT
