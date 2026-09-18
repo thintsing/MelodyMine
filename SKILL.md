@@ -1,6 +1,6 @@
 ---
 name: melodymine
-description: "Download music with MelodyMine from Bilibili, YouTube, Spotify URLs, and NetEase URLs. Use when the user asks to download/save songs, albums, playlists, music URLs, Chinese songs, English songs, Spotify tracks, NetEase/网易云 links, Bilibili/YouTube audio, FLAC/MP3 music, or says phrases like 下载歌曲, 下载音乐, 下载这首歌, 下载歌单, 下载这个链接, 用 MelodyMine 下载, download music, download song, save this track, sync Spotify playlist."
+description: "Download music with MelodyMine from Bilibili, YouTube, YouTube Music, Spotify URLs, NetEase URLs, Kuwo, Audius, and Soulseek P2P. Use when the user asks to download/save songs, albums, playlists, music URLs, Chinese songs, English songs, Spotify tracks, NetEase/网易云 links, Bilibili/YouTube audio, FLAC/MP3 music, lyrics/歌词, or says phrases like 下载歌曲, 下载音乐, 下载这首歌, 下载歌单, 下载这个链接, 用 MelodyMine 下载, download music, download song, save this track, sync Spotify playlist."
 ---
 
 # MelodyMine
@@ -92,6 +92,27 @@ NetEase URL (resolved to song name, then downloaded via Bilibili/YouTube):
 python scripts/music_helper.py download "https://music.163.com/song?id=185809"
 ```
 
+Kuwo Music (酷我音乐) — search and download directly:
+
+```bash
+python scripts/music_helper.py download "周杰伦 稻香" --platform kuwo
+python scripts/music_helper.py search "周杰伦" --platform kuwo
+```
+
+Audius — decentralized music streaming (zero auth required):
+
+```bash
+python scripts/music_helper.py download "Song Name" --platform audius
+python scripts/music_helper.py search "Artist Name" --platform audius
+```
+
+YouTube Music — catalog search (no cookies needed):
+
+```bash
+python scripts/music_helper.py download "Song Name" --platform ytmusic
+python scripts/music_helper.py search "Artist Name" --platform ytmusic
+```
+
 Direct URL (YouTube / SoundCloud / Bandcamp — yt-dlp downloads directly, no search):
 
 ```bash
@@ -152,7 +173,7 @@ python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
 
 `music_helper.py download` supports:
 
-- `--platform {auto,bilibili,youtube,ytmusic,soulseek}`: default `auto`.
+- `--platform {auto,bilibili,youtube,ytmusic,kuwo,audius,soulseek}`: default `auto`.
 - `--format {auto,mp3,flac,m4a,opus,wav,vorbis}`: default `auto`. `auto` probes the source codec: flac if lossless (flac/alac/wav/pcm), else mp3 320K — no fake-lossless upcast.
 - `--output PATH`: default platform music folder.
 - `--proxy URL`: for YouTube or Spotify download networking.
@@ -167,11 +188,13 @@ python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
 - `--slsk-user USER`: Soulseek username (or set `SLSK_USERNAME` env var).
 - `--slsk-pass PASS`: Soulseek password (or set `SLSK_PASSWORD` env var).
 - `--quick`: skip Soulseek P2P tier — go straight to Bilibili/YouTube for faster downloads.
+- `--no-lyrics`: skip lyrics fetching and embedding (saves time if you don't need synced lyrics).
 
 `music_helper.py meta "filepath"` supports:
 
 - `--query QUERY`: search query for metadata lookup (default: derive from filename).
 - `--no-thumbnail`: skip cover art embedding.
+- `--no-lyrics`: skip lyrics fetching and embedding.
 - `--json`: output machine-readable JSON after the update.
 
 ## Platform Behavior
@@ -182,6 +205,9 @@ python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
 | English/non-Chinese query | Soulseek → YouTube | Soulseek first, then YouTube. Use `--quick` to skip Soulseek. Add proxy only after network failure. |
 | Spotify URL | spotDL through `music_helper.py` | May need proxy in restricted regions. For playlist sync use `spotify_helper.py`. |
 | NetEase URL (`music.163.com/song?id=xxx`) | NetEase direct → Bilibili/YouTube | Resolves song name via NetEase API, tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube. |
+| Force Kuwo (`--platform kuwo`) | Kuwo API direct | Search and download via Kuwo Music API. Supports lossless FLAC and high-bitrate MP3. No auth required. |
+| Force Audius (`--platform audius`) | Audius decentralized network | Search and stream from Audius P2P network. Zero auth required. Independent artists and remixes. |
+| Force YouTube Music (`--platform ytmusic`) | YouTube Music catalog | Search YouTube Music catalog and download via yt-dlp. No cookies needed for search. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct download | No search step — yt-dlp downloads the URL directly. YouTube may need proxy/cookies. |
 | Force Soulseek (`--platform soulseek`) | Soulseek P2P network | ⚠️ Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads the best FLAC from the first user with free slots. |
 | Force quick (`--quick`) | Bilibili or YouTube (skip Soulseek) | Skips the Soulseek P2P tier entirely. Useful when Soulseek is slow/unavailable or for faster downloads. |
@@ -215,6 +241,6 @@ After a successful command, tell the user:
 - the downloaded song or source URL,
 - the output directory or file path printed by the helper,
 - the format,
-- whether fallback, proxy, cookies, or metadata cleanup was used.
+- whether fallback, proxy, cookies, metadata cleanup, or lyrics fetching was used.
 
 If the command fails, summarize the real error and the next concrete retry command.
