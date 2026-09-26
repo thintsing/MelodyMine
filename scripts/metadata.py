@@ -25,6 +25,7 @@ import mbrainz_client
 import netease_client
 from melodymine_common import (
     find_ffmpeg,
+    is_accompaniment,
     sanitize_filename,
 )
 
@@ -184,17 +185,6 @@ def parse_bili_title(title):
 
 # ─── Bilibili result ranking ───────────────────────────────────────────
 
-_ACCOMPANIMENT_RE = re.compile(
-    r"伴奏|纯音乐|卡拉OK|卡拉ok|karaoke|instrumental|backing\s*track|"
-    r"accompaniment|off\s*vocal|无人声|消音|静音版?",
-    re.IGNORECASE,
-)
-
-
-def _is_accompaniment(title):
-    return bool(_ACCOMPANIMENT_RE.search(title or ""))
-
-
 def rank_bili_results(results):
     """Reorder Bilibili search results so non-accompaniment entries come first.
 
@@ -203,8 +193,8 @@ def rank_bili_results(results):
     default --index 1 picks the most relevant *vocal* version instead of a
     backing track that happened to rank highest.
     """
-    vocal = [r for r in results if not _is_accompaniment(r.get("title", ""))]
-    accomp = [r for r in results if _is_accompaniment(r.get("title", ""))]
+    vocal = [r for r in results if not is_accompaniment(r.get("title", ""))]
+    accomp = [r for r in results if is_accompaniment(r.get("title", ""))]
     return vocal + accomp
 
 

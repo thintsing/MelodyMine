@@ -15,6 +15,9 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 
 _SEARCH_URL = "http://www.kuwo.cn/search/searchMusicBykeyWord"
 
+# Public web-player endpoint: returns time-stamped lines for a music id.
+_LYRIC_URL = "https://kuwo.cn/openapi/v1/www/lyric/getlyric"
+
 _FALLBACK_APIS = [
     {
         "name": "haitang",
@@ -128,6 +131,36 @@ def get_download_url(music_id, quality="lossless", timeout=10):
     return None
 
 
+def get_lyrics(music_id, timeout=10):
+    """Fetch time-stamped lyrics for a Kuwo song id as LRC text.
+
+    Kuwo's catalogue covers CJK tracks that community sources miss, and this
+    endpoint returns timestamps rather than plain text. Returns ``None`` when
+    the song has no lyrics (the API answers 200 with an empty ``data``).
+    """
+    if not music_id:
+        return None
+
+    body = _get_json(_LYRIC_URL, {"musicId": music_id}, timeout)
+    if not body or body.get("code") != 200:
+        return None
+
+    lines = (body.get("data") or {}).get("lrclist") or []
+    out = []
+    for line in lines:
+        text = (line.get("lineLyric") or "").strip()
+        if not text:
+            continue
+        try:
+            secs = float(line.get("time") or 0)
+        except (TypeError, ValueError):
+            secs = 0.0
+        # Round before splitting so 59.999 doesn't render as "[00:60.00]".
+        mins, sec = divmod(round(max(secs, 0.0), 2), 60)
+        out.append(f"[{int(mins):02d}:{sec:05.2f}]{text}")
+    return "\n".join(out) if out else None
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
     if cmd == "search" and len(sys.argv) >= 3:
@@ -141,7 +174,10 @@ if __name__ == "__main__":
         q = sys.argv[3] if len(sys.argv) > 3 else "lossless"
         url = get_download_url(mid, quality=q)
         print(url or "(no URL)")
+    elif cmd == "lyrics" and len(sys.argv) >= 3:
+        print(get_lyrics(sys.argv[2]) or "(no lyrics)")
     else:
         print("Usage: python kuwo_client.py search <query> [limit]")
         print("       python kuwo_client.py url <musicId> [quality]")
+        print("       python kuwo_client.py lyrics <musicId>")
         sys.exit(1)

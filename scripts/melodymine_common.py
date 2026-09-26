@@ -602,6 +602,53 @@ def proxy_to_env(proxy_url):
     return {"HTTP_PROXY": proxy_url, "HTTPS_PROXY": proxy_url}
 
 
+# ─── Title classification ────────────────────────────────────────────────
+# Search APIs return every version of a song that exists — backing tracks,
+# live cuts, DJ edits, 30-second clips, covers. Ranking and lyric matching
+# both need to tell them apart, so the patterns live here rather than being
+# duplicated per caller.
+
+_ACCOMPANIMENT_RE = re.compile(
+    r"伴奏|纯音乐|卡拉OK|卡拉ok|karaoke|instrumental|backing\s*track|"
+    r"accompaniment|off\s*vocal|无人声|消音|静音版?",
+    re.IGNORECASE,
+)
+
+# Anything that is not the studio original. Deliberately broad: when a user
+# asks for a song they almost always mean the original recording, and a
+# wrong-but-plausible cover is a worse outcome than a failed search.
+_DERIVATIVE_RE = re.compile(
+    r"翻唱|翻自|cover|现场|live|演唱会|巡演|remix|混音|dj版|慢摇|"
+    r"加速|减速|sped\s*up|slowed|reverb|片段|剪辑|串烧|medley|"
+    r"\d+\s*秒|改编|致敬|tribute",
+    re.IGNORECASE,
+)
+
+# A trailing version tag is not part of a song's identity:
+# "默 (Live)" and "默" are the same song.
+_VERSION_TAG_RE = re.compile(r"\s*[\(（【\[][^()（）【】\[\]]*[\)）】\]]\s*$")
+
+
+def is_accompaniment(title):
+    """True for backing tracks / instrumentals with no lead vocal."""
+    return bool(_ACCOMPANIMENT_RE.search(title or ""))
+
+
+def is_derivative(title):
+    """True for a version that is not the studio original."""
+    return bool(_DERIVATIVE_RE.search(title or ""))
+
+
+def strip_version_tag(text):
+    """Drop trailing version annotations: ``默 (Live) (Remaster)`` → ``默``."""
+    text = text or ""
+    while True:
+        stripped = _VERSION_TAG_RE.sub("", text).strip()
+        if stripped == text:
+            return stripped
+        text = stripped
+
+
 # ─── Language / URL detection ────────────────────────────────────────────
 
 def is_chinese(text):

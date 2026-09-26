@@ -44,6 +44,7 @@ from melodymine_common import (
     extract_netease_song_id,
     find_ffmpeg,
     find_python,
+    is_accompaniment,
     is_bandcamp_url,
     is_bilibili_url,
     is_direct_download_url,
@@ -342,7 +343,6 @@ def _print_plan(plan):
 parse_search_query = _metadata_mod.parse_search_query
 parse_bili_title = _metadata_mod.parse_bili_title
 rank_bili_results = _metadata_mod.rank_bili_results
-_is_accompaniment = _metadata_mod._is_accompaniment
 _clean_artist = _metadata_mod._clean_artist
 
 def resolve_netease_url(url):
@@ -911,7 +911,7 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
         if results:
             results = rank_bili_results(results)
             for i, r in enumerate(results, 1):
-                tag = " [伴奏/纯音乐]" if _is_accompaniment(r.get("title", "")) else ""
+                tag = " [伴奏/纯音乐]" if is_accompaniment(r.get("title", "")) else ""
                 print(f"  {i}. [{r['duration']}] {r['title']}{tag}")
                 print(f"     Uploader: {r['uploader']} | Plays: {r['play']} | bvid: {r['bvid']}")
                 print()
@@ -1148,7 +1148,7 @@ def _download_bilibili(
             )
 
         results = rank_bili_results(results)
-        skipped_accomp = sum(1 for r in results if _is_accompaniment(r.get("title", "")))
+        skipped_accomp = sum(1 for r in results if is_accompaniment(r.get("title", "")))
         if skipped_accomp:
             print(f"  (优先选择带人声版本，已将 {skipped_accomp} 个伴奏/纯音乐结果排后)")
 

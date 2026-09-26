@@ -179,6 +179,82 @@ class TestGetLyrics(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestKuwoFallback(unittest.TestCase):
+    """Kuwo covers CJK tracks LRCLIB misses, and returns timestamps."""
+
+    @staticmethod
+    def _result(artist, title, music_id):
+        return {"artist": artist, "title": title, "music_id": music_id,
+                "album": "", "duration": 0, "pic_url": ""}
+
+    def test_rank_demotes_accompaniment_and_derivatives(self):
+        results = [
+            self._result("张杰", "默(现场版伴奏)", "1"),
+            self._result("张杰", "默 (Live)", "2"),
+            self._result("张杰", "默", "3"),
+        ]
+        ranked = lyrics_client._rank_kuwo_matches(results, "张杰", "默")
+        self.assertEqual([r["music_id"] for r in ranked], ["3", "2", "1"])
+
+    def test_rank_drops_unrelated_songs(self):
+        results = [
+            self._result("张杰", "天下", "1"),
+            self._result("李琛", "窗外", "2"),
+        ]
+        self.assertEqual(lyrics_client._rank_kuwo_matches(results, "谢天笑", "窗外"),
+                         [])
+
+    def test_rank_matches_live_version_of_the_right_song(self):
+        results = [self._result("张杰", "默 (歌手2017现场版)", "7")]
+        ranked = lyrics_client._rank_kuwo_matches(results, "张杰", "默")
+        self.assertEqual([r["music_id"] for r in ranked], ["7"])
+
+    def test_rank_ignores_artist_when_unknown(self):
+        results = [self._result("任何人", "默", "9")]
+        self.assertEqual(len(lyrics_client._rank_kuwo_matches(results, "", "默")), 1)
+
+    @patch("kuwo_client.get_lyrics", return_value="[00:00.00]默 - 张杰")
+    @patch("kuwo_client.search")
+    def test_kuwo_lyrics_uses_best_match(self, mock_search, mock_get):
+        mock_search.return_value = [
+            self._result("张杰", "默(伴奏)", "1"),
+            self._result("张杰", "默", "2"),
+        ]
+        self.assertEqual(lyrics_client._get_lyrics_kuwo("张杰", "默", 10),
+                         "[00:00.00]默 - 张杰")
+        mock_get.assert_called_once_with("2", timeout=10)
+
+    @patch("kuwo_client.get_lyrics", return_value=None)
+    @patch("kuwo_client.search")
+    def test_kuwo_no_lyrics(self, mock_search, mock_get):
+        mock_search.return_value = [self._result("张杰", "默", "2")]
+        self.assertIsNone(lyrics_client._get_lyrics_kuwo("张杰", "默", 10))
+
+    @patch("kuwo_client.search", return_value=[])
+    def test_kuwo_no_search_results(self, mock_search):
+        self.assertIsNone(lyrics_client._get_lyrics_kuwo("张杰", "默", 10))
+
+    @patch("lyrics_client._get_lyrics_kuwo", return_value="[00:00.00]kuwo line")
+    @patch("lyrics_client._get_lyrics_lrclib",
+           return_value={"synced_lyrics": "", "plain_lyrics": "plain text"})
+    def test_kuwo_synced_beats_lrclib_plain(self, mock_lrclib, mock_kuwo):
+        result = lyrics_client.get_lyrics("张杰", "默")
+        self.assertEqual(result["synced_lyrics"], "[00:00.00]kuwo line")
+        self.assertEqual(result["plain_lyrics"], "plain text")
+
+    @patch("lyrics_client._get_lyrics_kuwo")
+    @patch("lyrics_client._get_lyrics_lrclib",
+           return_value={"synced_lyrics": "[00:01.00]lrclib", "plain_lyrics": "p"})
+    def test_lrclib_synced_short_circuits(self, mock_lrclib, mock_kuwo):
+        lyrics_client.get_lyrics("Artist", "Song")
+        mock_kuwo.assert_not_called()
+
+    @patch("lyrics_client._get_lyrics_kuwo", return_value=None)
+    @patch("lyrics_client._get_lyrics_lrclib", return_value=None)
+    def test_both_sources_empty(self, mock_lrclib, mock_kuwo):
+        self.assertIsNone(lyrics_client.get_lyrics("Artist", "Song"))
+
+
 class TestSaveLrc(unittest.TestCase):
 
     def test_save_synced_lyrics(self):

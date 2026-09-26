@@ -124,6 +124,60 @@ class TestKuwoDownloadUrl(unittest.TestCase):
         self.assertIsNone(kuwo_client.get_download_url(None))
 
 
+class TestKuwoLyrics(unittest.TestCase):
+
+    @patch("urllib.request.urlopen")
+    def test_formats_lrc_timestamps(self, mock_open):
+        mock_open.return_value = _mock_urlopen(json_data={
+            "code": 200,
+            "data": {"lrclist": [
+                {"lineLyric": "稻香 - 周杰伦", "time": "0.0"},
+                {"lineLyric": "对这个世界如果你有太多的抱怨", "time": "30.94"},
+                {"lineLyric": "回家吧 回到最初的美好", "time": "189.48"},
+            ]},
+        })
+        self.assertEqual(
+            kuwo_client.get_lyrics("440613"),
+            "[00:00.00]稻香 - 周杰伦\n"
+            "[00:30.94]对这个世界如果你有太多的抱怨\n"
+            "[03:09.48]回家吧 回到最初的美好",
+        )
+
+    @patch("urllib.request.urlopen")
+    def test_rounds_up_to_next_minute(self, mock_open):
+        mock_open.return_value = _mock_urlopen(json_data={
+            "code": 200,
+            "data": {"lrclist": [{"lineLyric": "line", "time": "59.999"}]},
+        })
+        self.assertEqual(kuwo_client.get_lyrics("1"), "[01:00.00]line")
+
+    @patch("urllib.request.urlopen")
+    def test_skips_blank_and_bad_rows(self, mock_open):
+        mock_open.return_value = _mock_urlopen(json_data={
+            "code": 200,
+            "data": {"lrclist": [
+                {"lineLyric": "", "time": "1.0"},
+                {"lineLyric": "real line", "time": "not-a-number"},
+            ]},
+        })
+        self.assertEqual(kuwo_client.get_lyrics("1"), "[00:00.00]real line")
+
+    @patch("urllib.request.urlopen")
+    def test_song_without_lyrics(self, mock_open):
+        # The API answers 200 with an empty data object for unknown ids.
+        mock_open.return_value = _mock_urlopen(json_data={"code": 200, "data": {}})
+        self.assertIsNone(kuwo_client.get_lyrics("999999999"))
+
+    @patch("urllib.request.urlopen")
+    def test_network_error(self, mock_open):
+        mock_open.side_effect = Exception("network error")
+        self.assertIsNone(kuwo_client.get_lyrics("440613"))
+
+    def test_missing_id_returns_none(self):
+        self.assertIsNone(kuwo_client.get_lyrics(""))
+        self.assertIsNone(kuwo_client.get_lyrics(None))
+
+
 # ─── Audius ──────────────────────────────────────────────────────────────
 
 class TestAudiusSearch(unittest.TestCase):

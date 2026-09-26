@@ -31,9 +31,11 @@ from melodymine_common import (  # noqa: E402
     enable_utf8_stdio,
     extract_bilibili_bvid,
     extract_netease_song_id,
+    is_accompaniment,
     is_bandcamp_url,
     is_bilibili_url,
     is_chinese,
+    is_derivative,
     is_direct_download_url,
     is_netease_url,
     is_socks_proxy,
@@ -43,11 +45,11 @@ from melodymine_common import (  # noqa: E402
     make_subprocess_env,
     proxy_to_env,
     sanitize_filename,
+    strip_version_tag,
 )
 from metadata import (  # noqa: E402
     _best_metadata_candidate,
     _clean_artist,
-    _is_accompaniment,
     _norm_cn,
     _score_metadata_candidate,
     find_downloaded_file,
@@ -396,23 +398,75 @@ class TestIsChinese(unittest.TestCase):
 class TestIsAccompaniment(unittest.TestCase):
 
     def test_chinese_accompaniment(self):
-        self.assertTrue(_is_accompaniment("稻香 伴奏"))
-        self.assertTrue(_is_accompaniment("稻香 纯音乐版"))
-        self.assertTrue(_is_accompaniment("稻香 卡拉OK"))
+        self.assertTrue(is_accompaniment("稻香 伴奏"))
+        self.assertTrue(is_accompaniment("稻香 纯音乐版"))
+        self.assertTrue(is_accompaniment("稻香 卡拉OK"))
 
     def test_english_accompaniment(self):
-        self.assertTrue(_is_accompaniment("Dao Xiang Karaoke"))
-        self.assertTrue(_is_accompaniment("Blinding Lights Instrumental"))
-        self.assertTrue(_is_accompaniment("Song backing track"))
-        self.assertTrue(_is_accompaniment("off vocal version"))
+        self.assertTrue(is_accompaniment("Dao Xiang Karaoke"))
+        self.assertTrue(is_accompaniment("Blinding Lights Instrumental"))
+        self.assertTrue(is_accompaniment("Song backing track"))
+        self.assertTrue(is_accompaniment("off vocal version"))
 
     def test_vocal_song(self):
-        self.assertFalse(_is_accompaniment("周杰伦《稻香》完整版"))
-        self.assertFalse(_is_accompaniment("The Weeknd - Blinding Lights Official MV"))
+        self.assertFalse(is_accompaniment("周杰伦《稻香》完整版"))
+        self.assertFalse(is_accompaniment("The Weeknd - Blinding Lights Official MV"))
 
     def test_empty(self):
-        self.assertFalse(_is_accompaniment(""))
-        self.assertFalse(_is_accompaniment(None))
+        self.assertFalse(is_accompaniment(""))
+        self.assertFalse(is_accompaniment(None))
+
+
+class TestIsDerivative(unittest.TestCase):
+    """is_derivative: not the studio original."""
+
+    def test_live_and_concert(self):
+        self.assertTrue(is_derivative("默 (Live)"))
+        self.assertTrue(is_derivative("默 (歌手2017现场版)"))
+        self.assertTrue(is_derivative("2025未LIVE巡回演唱会金华站"))
+
+    def test_cover(self):
+        self.assertTrue(is_derivative("你不要担心 (翻唱)"))
+        self.assertTrue(is_derivative("Song (Cover by Someone)"))
+
+    def test_remix_and_edit(self):
+        self.assertTrue(is_derivative("Song (DJ 慢摇版)"))
+        self.assertTrue(is_derivative("Song (Sped Up)"))
+        self.assertTrue(is_derivative("Song (Remix)"))
+
+    def test_fragment(self):
+        self.assertTrue(is_derivative("默 (57秒Live片段)"))
+        self.assertTrue(is_derivative("默 (Live片段)"))
+
+    def test_studio_original(self):
+        self.assertFalse(is_derivative("稻香"))
+        self.assertFalse(is_derivative("The Weeknd - Blinding Lights"))
+        self.assertFalse(is_derivative(""))
+        self.assertFalse(is_derivative(None))
+
+
+class TestStripVersionTag(unittest.TestCase):
+    """strip_version_tag: version annotations are not song identity."""
+
+    def test_live_suffix(self):
+        self.assertEqual(strip_version_tag("默 (Live)"), "默")
+
+    def test_cjk_brackets(self):
+        self.assertEqual(strip_version_tag("默（现场版）"), "默")
+        self.assertEqual(strip_version_tag("默【Live】"), "默")
+
+    def test_repeated_suffixes(self):
+        self.assertEqual(strip_version_tag("默 (Live) (Remaster)"), "默")
+
+    def test_no_suffix(self):
+        self.assertEqual(strip_version_tag("稻香"), "稻香")
+
+    def test_only_strips_trailing(self):
+        self.assertEqual(strip_version_tag("(Live) 默"), "(Live) 默")
+
+    def test_empty(self):
+        self.assertEqual(strip_version_tag(""), "")
+        self.assertEqual(strip_version_tag(None), "")
 
 
 class TestRankBiliResults(unittest.TestCase):

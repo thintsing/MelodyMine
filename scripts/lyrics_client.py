@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
-"""Lyrics client — fetch synced/plain lyrics from LRCLIB (free, no auth), stdlib only."""
+"""Lyrics client — fetch synced/plain lyrics, stdlib only.
 
+Sources, in order: LRCLIB (free, no auth, well curated) then Kuwo, which
+covers CJK tracks LRCLIB misses and returns timestamps.
+"""
+
+import difflib
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
+
+from melodymine_common import is_accompaniment, is_derivative, strip_version_tag
 
 UA = "MelodyMine/1.0 (music-downloader; +https://github.com/thintsing/MelodyMine)"
 
@@ -54,14 +62,29 @@ def search(query, limit=5, timeout=10):
 
 
 def get_lyrics(artist, title, album=None, timeout=10):
-    """Fetch lyrics for a specific song.
+    """Fetch lyrics for a specific song, trying every configured source.
 
-    Tries direct lookup first, falls back to search.
+    LRCLIB goes first — it is well curated and needs no matching heuristics.
+    Kuwo fills the gap LRCLIB has on CJK tracks, and it returns timestamps, so
+    a Kuwo hit is preferred over an LRCLIB plain-text-only hit.
+
     Returns dict with synced_lyrics and plain_lyrics, or None on failure.
     """
     if not title:
         return None
 
+    lrclib = _get_lyrics_lrclib(artist, title, album, timeout)
+    if lrclib and lrclib.get("synced_lyrics"):
+        return lrclib
+
+    kuwo = _get_lyrics_kuwo(artist, title, timeout)
+    if kuwo:
+        return {"synced_lyrics": kuwo, "plain_lyrics": (lrclib or {}).get("plain_lyrics", "")}
+    return lrclib
+
+
+def _get_lyrics_lrclib(artist, title, album, timeout):
+    """LRCLIB lookup: direct artist/title hit first, then a search."""
     if artist:
         params = urllib.parse.urlencode({
             "artist_name": artist,
@@ -88,6 +111,59 @@ def get_lyrics(artist, title, album=None, timeout=10):
             "synced_lyrics": results[0].get("synced_lyrics", ""),
             "plain_lyrics": results[0].get("plain_lyrics", ""),
         }
+    return None
+
+
+# Punctuation and spacing vary wildly between sources for the same song, so
+# drop it before comparing.
+_LYRIC_NORM_RE = re.compile(r"[\s()\[\]{}【】《》〈〉·・、,，.。\-_/\\'\"’“”!！?？:：;；&+*]")
+
+
+def _lyric_sim(a, b):
+    return difflib.SequenceMatcher(None, _LYRIC_NORM_RE.sub("", a or "").lower(),
+                                   _LYRIC_NORM_RE.sub("", b or "").lower()).ratio()
+
+
+def _rank_kuwo_matches(results, artist, title):
+    """Kuwo results that could be this song, best first.
+
+    Version tags are stripped before comparing so a live recording of the
+    right song still matches — Kuwo indexes most CJK catalogue as live or
+    remaster editions. Backing tracks and clipped fragments are demoted:
+    their lyric text is missing or partial.
+    """
+    want_title = strip_version_tag(title)
+    scored = []
+    for item in results:
+        raw_title = item.get("title") or ""
+        if _lyric_sim(want_title, strip_version_tag(raw_title)) < 0.7:
+            continue
+        if artist and _lyric_sim(artist, item.get("artist")) < 0.5:
+            continue
+        penalty = 0.0
+        if is_accompaniment(raw_title):
+            penalty += 0.4
+        if is_derivative(raw_title):
+            penalty += 0.2
+        scored.append((penalty, item))
+    scored.sort(key=lambda pair: pair[0])
+    return [item for _, item in scored]
+
+
+def _get_lyrics_kuwo(artist, title, timeout):
+    """Kuwo lookup: search for the song, then pull lyrics by its music id."""
+    import kuwo_client
+
+    query = f"{artist} {title}".strip() if artist else title
+    results = kuwo_client.search(query, limit=10, timeout=timeout)
+    if not results:
+        return None
+
+    # A demoted candidate may be the only one Kuwo actually has lyrics for.
+    for match in _rank_kuwo_matches(results, artist, title)[:3]:
+        lrc = kuwo_client.get_lyrics(match["music_id"], timeout=timeout)
+        if lrc:
+            return lrc
     return None
 
 
