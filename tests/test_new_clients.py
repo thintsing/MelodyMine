@@ -124,6 +124,46 @@ class TestKuwoDownloadUrl(unittest.TestCase):
         self.assertIsNone(kuwo_client.get_download_url(None))
 
 
+class TestKuwoAntiserver(unittest.TestCase):
+    """antiserver.kuwo.cn: first-party last resort, MP3 only."""
+
+    URL = "https://kw-er.kuwo.cn/abc/resource/30106/trackmedia/M5000.mp3"
+
+    @patch("urllib.request.urlopen")
+    def test_used_when_aggregators_return_nothing(self, mock_open):
+        with patch.object(kuwo_client, "_FALLBACK_APIS", []):
+            mock_open.return_value = _mock_urlopen(raw_bytes=self.URL.encode())
+            self.assertEqual(kuwo_client.get_download_url("12345"), self.URL)
+
+    @patch("urllib.request.urlopen")
+    def test_requests_the_mp3_rid(self, mock_open):
+        with patch.object(kuwo_client, "_FALLBACK_APIS", []):
+            mock_open.return_value = _mock_urlopen(raw_bytes=self.URL.encode())
+            kuwo_client.get_download_url("12345")
+        sent = mock_open.call_args[0][0].full_url
+        self.assertIn("antiserver.kuwo.cn/anti.s", sent)
+        self.assertIn("rid=MUSIC_12345", sent)
+        self.assertIn("format=mp3", sent)
+
+    @patch("urllib.request.urlopen")
+    def test_flac_refusal_returns_none(self, mock_open):
+        with patch.object(kuwo_client, "_FALLBACK_APIS", []):
+            mock_open.return_value = _mock_urlopen(raw_bytes=b"refuse request!")
+            self.assertIsNone(kuwo_client.get_download_url("12345"))
+
+    @patch("urllib.request.urlopen")
+    def test_empty_body_returns_none(self, mock_open):
+        with patch.object(kuwo_client, "_FALLBACK_APIS", []):
+            mock_open.return_value = _mock_urlopen(raw_bytes=b"")
+            self.assertIsNone(kuwo_client.get_download_url("12345"))
+
+    @patch("urllib.request.urlopen")
+    def test_aggregator_still_wins(self, mock_open):
+        mock_open.return_value = _mock_urlopen({"data": {"url": "https://cdn.kuwo.cn/s.flac"}})
+        self.assertEqual(kuwo_client.get_download_url("12345"), "https://cdn.kuwo.cn/s.flac")
+        self.assertNotIn("antiserver", mock_open.call_args[0][0].full_url)
+
+
 class TestKuwoLyrics(unittest.TestCase):
 
     @patch("urllib.request.urlopen")

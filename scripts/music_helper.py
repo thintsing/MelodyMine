@@ -1442,6 +1442,82 @@ def _download_youtube(
             "error": "All download tiers exhausted (Soulseek, YouTube)"}
 
 
+# Kugou's CDN answers on hosts its TLS certificate does not cover
+# (fs.youthandroid2.kugou.com → CERTIFICATE_VERIFY_FAILED), so the audio is
+# fetched over plain HTTP. The URL itself is signed and single-use.
+def _plain_http(url):
+    return url.replace("https://", "http://", 1) if url else url
+
+
+_AUDIO_MAGIC = (
+    (b"fLaC", "flac"),
+    (b"ID3", "mp3"),
+    (b"OggS", "ogg"),
+    (b"FORM", "wav"),
+)
+
+
+def _sniff_audio_ext(path):
+    """Guess a container from its first bytes.
+
+    The CJK resolvers hand back whatever they have rather than what was asked
+    for, so the extension cannot be derived from the request.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(12)
+    except OSError:
+        return None
+    for magic, ext in _AUDIO_MAGIC:
+        if head.startswith(magic):
+            return ext
+    # MP4/M4A lead with a 4-byte box size, so the marker sits at offset 4.
+    if head[4:8] == b"ftyp":
+        return "m4a"
+    if head[:1] == b"\xff" and head[1:2] in (b"\xf2", b"\xf3", b"\xfb"):
+        return "mp3"
+    return None
+
+
+def _probe_duration(ffmpeg_exe, path):
+    """Read a file's duration in seconds, or None if it cannot be determined."""
+    if not ffmpeg_exe:
+        return None
+    try:
+        result = subprocess.run(
+            [ffmpeg_exe, "-i", path],
+            capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
+        )
+    except Exception:
+        return None
+    # ffmpeg prints the format header to stderr and exits non-zero when given
+    # no output file, so the text is the only thing worth looking at.
+    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr or "")
+    if not m:
+        return None
+    hours, minutes, seconds = m.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def _preview_clip_error(ffmpeg_exe, path, expected_secs):
+    """Reject a download that is a licensed-track preview rather than the song.
+
+    CJK catalogues answer VIP tracks with an ~11s clip that is still large
+    enough to pass a byte-size check, so the only reliable signal is comparing
+    the real duration against what search advertised. Returns an error message,
+    or None when the file looks complete (or the duration cannot be read).
+    """
+    if not expected_secs:
+        return None
+    actual = _probe_duration(ffmpeg_exe, path)
+    if actual is None or actual >= expected_secs * 0.5:
+        return None
+    print(f"  [!] Source returned a {actual:.0f}s clip, not the full "
+          f"{int(expected_secs) // 60}:{int(expected_secs) % 60:02d} track (VIP/preview-only).")
+    return f"Source returned a preview clip ({actual:.0f}s of {int(expected_secs)}s)"
+
+
 def _kuwo_quality_for_fmt(fmt):
     """Map output format to the best Kuwo quality level."""
     if fmt in ("flac", "wav"):
@@ -1501,8 +1577,7 @@ def _download_kuwo(
     debug_log(f"kuwo url resolved: {audio_url[:80]}...")
 
     print("[3/3] Downloading audio...")
-    raw_ext = "flac" if quality == "lossless" else "mp3"
-    raw_path = os.path.join(output, f"_kuwo_raw_{music_id}.{raw_ext}")
+    raw_path = os.path.join(output, f"_kuwo_raw_{music_id}.part")
 
     req = urllib.request.Request(audio_url)
     req.add_header("User-Agent", kuwo_client.UA)
@@ -1530,11 +1605,18 @@ def _download_kuwo(
                 "error": "Downloaded file too small"}
     print(f"  Downloaded: {size_mb:.1f} MB")
 
-    actual_fmt = fmt
-    if fmt == "auto":
-        actual_fmt = "flac" if raw_ext == "flac" else "mp3"
-
     ffmpeg_exe = find_ffmpeg(py)
+
+    clip_error = _preview_clip_error(ffmpeg_exe, raw_path, dur)
+    if clip_error:
+        os.remove(raw_path)
+        return {"ok": False, "platform": "kuwo", "query": query, "error": clip_error}
+
+    raw_ext = _sniff_audio_ext(raw_path) or "mp3"
+    debug_log(f"kuwo container sniffed as {raw_ext}")
+
+    actual_fmt = raw_ext if fmt == "auto" else fmt
+
     song_name = sanitize_filename(f"{artist} - {title}" if artist else title)
 
     if ffmpeg_exe and actual_fmt != raw_ext:
@@ -1567,43 +1649,6 @@ def _download_kuwo(
         "query": query, "format": actual_fmt, "output": output,
         "metadata": not no_metadata,
     }
-
-
-# Kugou's CDN answers on hosts its TLS certificate does not cover
-# (fs.youthandroid2.kugou.com → CERTIFICATE_VERIFY_FAILED), so the audio is
-# fetched over plain HTTP. The URL itself is signed and single-use.
-def _plain_http(url):
-    return url.replace("https://", "http://", 1) if url else url
-
-
-_AUDIO_MAGIC = (
-    (b"fLaC", "flac"),
-    (b"ID3", "mp3"),
-    (b"OggS", "ogg"),
-    (b"FORM", "wav"),
-)
-
-
-def _sniff_audio_ext(path):
-    """Guess a container from its first bytes.
-
-    Kugou's resolver ignores the requested quality tier and hands back
-    whatever it has, so the extension cannot be derived from the request.
-    """
-    try:
-        with open(path, "rb") as f:
-            head = f.read(12)
-    except OSError:
-        return None
-    for magic, ext in _AUDIO_MAGIC:
-        if head.startswith(magic):
-            return ext
-    # MP4/M4A lead with a 4-byte box size, so the marker sits at offset 4.
-    if head[4:8] == b"ftyp":
-        return "m4a"
-    if head[:1] == b"\xff" and head[1:2] in (b"\xf2", b"\xf3", b"\xfb"):
-        return "mp3"
-    return None
 
 
 def _download_kugou(
@@ -1682,12 +1727,18 @@ def _download_kugou(
                 "error": "Downloaded file too small"}
     print(f"  Downloaded: {size_mb:.1f} MB")
 
+    ffmpeg_exe = find_ffmpeg(py)
+
+    clip_error = _preview_clip_error(ffmpeg_exe, raw_path, dur)
+    if clip_error:
+        os.remove(raw_path)
+        return {"ok": False, "platform": "kugou", "query": query, "error": clip_error}
+
     raw_ext = _sniff_audio_ext(raw_path) or "mp3"
     debug_log(f"kugou container sniffed as {raw_ext}")
 
     actual_fmt = raw_ext if fmt == "auto" else fmt
 
-    ffmpeg_exe = find_ffmpeg(py)
     song_name = sanitize_filename(f"{artist} - {title}" if artist else title)
 
     if ffmpeg_exe and actual_fmt != raw_ext:

@@ -35,6 +35,34 @@ _FALLBACK_APIS = [
 
 _QUALITY_LEVELS = ["lossless", "exhigh", "standard"]
 
+# Kuwo's own web player resolver. No token or signing, and it does not depend
+# on a third-party aggregator staying alive — but it only ever serves MP3, and
+# for licensed/VIP tracks it returns an ~11s preview instead of the song.
+# Callers must check the duration of what they actually got.
+_ANTISERVER_URL = "http://antiserver.kuwo.cn/anti.s"
+
+
+def _get_text(url, params, timeout=10):
+    qs = urllib.parse.urlencode(params)
+    req = urllib.request.Request(f"{url}?{qs}")
+    req.add_header("User-Agent", UA)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace").strip()
+    except Exception:
+        return None
+
+
+def _antiserver_url(music_id, timeout=10):
+    """First-party MP3 URL, or None. Answers 'refuse request!' for FLAC."""
+    body = _get_text(_ANTISERVER_URL, {
+        "type": "convert_url", "rid": f"MUSIC_{music_id}",
+        "format": "mp3", "response": "url", "br": "128kmp3",
+    }, timeout)
+    if not body or not body.startswith("http"):
+        return None
+    return body
+
 
 def _get_json(url, params, timeout=10):
     qs = urllib.parse.urlencode(params)
@@ -111,7 +139,8 @@ def search(query, limit=10, timeout=10):
 def get_download_url(music_id, quality="lossless", timeout=10):
     """Resolve a downloadable audio URL for a Kuwo song.
 
-    Tries multiple third-party fallback APIs in order.
+    Tries multiple third-party fallback APIs in order, then Kuwo's own
+    antiserver endpoint.
     *quality*: one of 'lossless' (FLAC), 'exhigh' (high-bitrate MP3), 'standard' (MP3).
     Returns the URL string, or None on failure.
     """
@@ -128,7 +157,10 @@ def get_download_url(music_id, quality="lossless", timeout=10):
                 url = api["parse"](body)
                 if url:
                     return url
-    return None
+
+    # Last resort: first-party, so it survives the aggregators going away,
+    # but MP3-only and it may hand back a preview clip.
+    return _antiserver_url(music_id, timeout)
 
 
 def get_lyrics(music_id, timeout=10):

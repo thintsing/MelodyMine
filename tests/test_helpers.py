@@ -1312,6 +1312,64 @@ class TestLyricsTarget(unittest.TestCase):
         self.assertEqual(music_helper._lyrics_target(None, None, "01.mp3"), (None, None))
 
 
+class TestProbeDuration(unittest.TestCase):
+    """_probe_duration: parse ffmpeg's stderr header."""
+
+    STDERR = ("Input #0, mp3, from 'song.mp3':\n  Duration: 00:05:09.58, "
+              "start: 0.025, bitrate: 128 kb/s\n    Stream #0:0: Audio: mp3\n")
+
+    def _run(self, stderr, ffmpeg="ffmpeg", exc=None):
+        with patch("music_helper.subprocess.run") as mock_run:
+            if exc:
+                mock_run.side_effect = exc
+            else:
+                mock_run.return_value = MagicMock(stderr=stderr, returncode=1)
+            return music_helper._probe_duration(ffmpeg, "song.mp3")
+
+    def test_parses_duration(self):
+        self.assertAlmostEqual(self._run(self.STDERR), 309.58, places=2)
+
+    def test_hours_component(self):
+        self.assertAlmostEqual(self._run("  Duration: 01:02:03.50\n"), 3723.5, places=2)
+
+    def test_no_duration_line(self):
+        self.assertIsNone(self._run("Input #0: garbage\n"))
+
+    def test_no_ffmpeg(self):
+        self.assertIsNone(self._run(self.STDERR, ffmpeg=None))
+
+    def test_subprocess_failure(self):
+        self.assertIsNone(self._run(self.STDERR, exc=OSError("boom")))
+
+
+class TestPreviewClipError(unittest.TestCase):
+    """_preview_clip_error: VIP tracks resolve to ~11s clips, not songs."""
+
+    def _run(self, actual, expected=223):
+        with patch("music_helper._probe_duration", return_value=actual):
+            return music_helper._preview_clip_error("ffmpeg", "song.mp3", expected)
+
+    def test_full_length_passes(self):
+        self.assertIsNone(self._run(222.9))
+
+    def test_clip_is_rejected(self):
+        err = self._run(11.31)
+        self.assertIn("preview clip", err)
+        self.assertIn("11s of 223s", err)
+
+    def test_half_length_is_the_threshold(self):
+        self.assertIsNone(self._run(111.5))
+        self.assertIsNotNone(self._run(111.4))
+
+    def test_unknown_expected_duration_is_not_checked(self):
+        with patch("music_helper._probe_duration") as mock_probe:
+            self.assertIsNone(music_helper._preview_clip_error("ffmpeg", "s.mp3", 0))
+        self.assertFalse(mock_probe.called)
+
+    def test_unreadable_duration_passes(self):
+        self.assertIsNone(self._run(None))
+
+
 class TestCmdLyricsSync(unittest.TestCase):
     """cmd_lyrics_sync: writes only sibling .lrc files, never touches audio."""
 
