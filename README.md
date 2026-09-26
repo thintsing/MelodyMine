@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyTDMgN3YxMGw5IDUgOS01VjdsLTktNXptMCAyLjJMMTguNSA3IDEyIDEwLjIgNS41IDcuMiAxMiA0LjJ6TTUgOC4ybDYgMy4zIDYtMy4zVjE1bC02IDMuMy02LTMuM1Y4LjJ6Ii8+PC9zdmc+)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-10%2B-orange)](#supported-platforms)
-[![Tests](https://img.shields.io/badge/tests-58%20passing-brightgreen?logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/tests-391%20passing-brightgreen?logo=pytest)](tests/)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -35,13 +35,13 @@ Search, download, and tag music from **10+ platforms** — with lossless FLAC, a
 
 | Platform | Type | Auth | Lossless | Notes |
 | :--- | :---: | :---: | :---: | :--- |
-| **Bilibili** | Search + Download | None | Via yt-dlp | Default for Chinese queries; pasted video URLs download directly |
+| **Bilibili** | Search + Download | None | Via yt-dlp | Fallback for Chinese queries; pasted video URLs download directly |
 | **YouTube** | Search + Download | Optional | Via yt-dlp | Default for international queries; proxy support |
 | **YouTube Music** | Search + Download | None | Via yt-dlp | Catalog search via `ytmusicapi` |
 | **Spotify** | URL Download | None | Via spotDL | Paste any Spotify URL; auto-installs spotDL |
 | **Soulseek** | P2P Search + Download | Username/Pass | Native FLAC | Multi-candidate retry; persistent session |
-| **Kuwo** | Search + Direct Download | None | Native FLAC | CDN resolution with a first-party MP3 fallback |
-| **Kugou** | Search + Direct Download | None | Native FLAC | `--platform kugou`; container sniffed from the file |
+| **Kuwo** | Search + Direct Download | None | Native FLAC | Second tier for Chinese queries; CDN resolution with a first-party MP3 fallback |
+| **Kugou** | Search + Direct Download | None | Native FLAC | First tier for Chinese queries; container sniffed from the file |
 | **Audius** | Search + Stream | None | 320kbps MP3 | Web3 music platform; zero auth required |
 | **NetEase** | URL Resolve + Download | None | 128kbps MP3 | CDN direct for free songs; auto fallback |
 | **SoundCloud** | Direct Download | None | Via yt-dlp | Paste URL directly |
@@ -54,6 +54,8 @@ Search, download, and tag music from **10+ platforms** — with lossless FLAC, a
 python scripts/music_helper.py setup
 
 # Download — just type the song name
+# Chinese queries resolve from the Kugou/Kuwo CDNs (studio original, native
+# FLAC, ~15s); anything else goes to Soulseek/YouTube.
 python scripts/music_helper.py download "周杰伦 稻香"
 python scripts/music_helper.py download "The Weeknd Blinding Lights"
 
@@ -176,7 +178,7 @@ Options:
 
 | Input | Route | Fallback Chain |
 | :--- | :--- | :--- |
-| Chinese query | Auto → Bilibili | Soulseek → Bilibili → YouTube |
+| Chinese query | Auto → Kugou → Kuwo | Kugou → Kuwo → Soulseek → Bilibili → YouTube |
 | English / international query | Auto → YouTube | Soulseek → YouTube |
 | `--platform kuwo` | Kuwo direct | Kuwo search → CDN → first-party antiserver |
 | `--platform kugou` | Kugou direct | Kugou search → CDN download (plain HTTP: the CDN cert does not match its hosts) |
@@ -244,7 +246,7 @@ Download Blinding Lights by The Weeknd
 ## Testing
 
 ```bash
-# Run all 356 tests
+# Run all 391 tests
 python -m pytest tests/ -v
 
 # Run a specific test module
@@ -270,7 +272,7 @@ MelodyMine/
 │   ├── lyrics_client.py       # LRCLIB + Kuwo lyrics — synced + plain (stdlib only)
 │   ├── mbrainz_client.py      # MusicBrainz metadata lookup (stdlib only)
 │   └── cover_client.py        # Cover art downloader (stdlib only)
-├── tests/                     # 356 unit tests (stdlib unittest + mocked HTTP)
+├── tests/                     # 391 unit tests (stdlib unittest + mocked HTTP)
 ├── .github/workflows/ci.yml   # GitHub Actions CI (ruff + pytest)
 ├── SKILL.md                   # AI assistant skill definition
 └── references/                # spotDL CLI & config reference docs

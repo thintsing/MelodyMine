@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyTDMgN3YxMGw5IDUgOS01VjdsLTktNXptMCAyLjJMMTguNSA3IDEyIDEwLjIgNS41IDcuMiAxMiA0LjJ6TTUgOC4ybDYgMy4zIDYtMy4zVjE1bC02IDMuMy02LTMuM1Y4LjJ6Ii8+PC9zdmc+)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-10%2B-orange)](#支持平台)
-[![Tests](https://img.shields.io/badge/tests-58%20passing-brightgreen?logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/tests-391%20passing-brightgreen?logo=pytest)](tests/)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -35,13 +35,13 @@
 
 | 平台 | 类型 | 认证 | 无损 | 说明 |
 | :--- | :---: | :---: | :---: | :--- |
-| **Bilibili** | 搜索 + 下载 | 无需 | 经 yt-dlp | 中文查询默认平台；粘贴视频链接可直连下载 |
+| **Bilibili** | 搜索 + 下载 | 无需 | 经 yt-dlp | 中文查询的回退来源；粘贴视频链接可直连下载 |
 | **YouTube** | 搜索 + 下载 | 可选 | 经 yt-dlp | 国际查询默认平台；支持代理 |
 | **YouTube Music** | 搜索 + 下载 | 无需 | 经 yt-dlp | 通过 `ytmusicapi` 搜索曲库 |
 | **Spotify** | URL 下载 | 无需 | 经 spotDL | 粘贴 Spotify 链接即可；自动安装 spotDL |
 | **Soulseek** | P2P 搜索 + 下载 | 用户名/密码 | 原生 FLAC | 多候选重试；持久会话 |
-| **酷我音乐** | 搜索 + 直接下载 | 无需 | 原生 FLAC | CDN 解析，并附带官方 antiserver 兜底 |
-| **酷狗音乐** | 搜索 + 直接下载 | 无需 | 原生 FLAC | `--platform kugou`；容器格式按文件头识别 |
+| **酷我音乐** | 搜索 + 直接下载 | 无需 | 原生 FLAC | 中文查询第二顺位；CDN 解析，并附带官方 antiserver 兜底 |
+| **酷狗音乐** | 搜索 + 直接下载 | 无需 | 原生 FLAC | 中文查询第一顺位；容器格式按文件头识别 |
 | **Audius** | 搜索 + 串流 | 无需 | 320kbps MP3 | Web3 音乐平台；零认证 |
 | **网易云音乐** | URL 解析 + 下载 | 无需 | 128kbps MP3 | 免费歌曲 CDN 直连；自动回退 |
 | **SoundCloud** | 直接下载 | 无需 | 经 yt-dlp | 粘贴 URL 直接下载 |
@@ -54,6 +54,8 @@
 python scripts/music_helper.py setup
 
 # 下载 —— 输入歌名即可
+# 中文查询直接走酷狗/酷我 CDN（原版录音、原生 FLAC，约 15 秒）；
+# 其他语言走 Soulseek / YouTube。
 python scripts/music_helper.py download "周杰伦 稻香"
 python scripts/music_helper.py download "The Weeknd Blinding Lights"
 
@@ -176,7 +178,7 @@ python scripts/music_helper.py lyrics-sync "directory" [options]
 
 | 输入 | 路由 | 回退链 |
 | :--- | :--- | :--- |
-| 中文查询 | Auto → Bilibili | Soulseek → Bilibili → YouTube |
+| 中文查询 | Auto → 酷狗 → 酷我 | 酷狗 → 酷我 → Soulseek → Bilibili → YouTube |
 | 英文 / 国际查询 | Auto → YouTube | Soulseek → YouTube |
 | `--platform kuwo` | 酷我直连 | 酷我搜索 → CDN → 官方 antiserver 兜底 |
 | `--platform kugou` | 酷狗直连 | 酷狗搜索 → CDN 下载（走明文 HTTP：CDN 证书与域名不匹配） |
@@ -244,7 +246,7 @@ Download Blinding Lights by The Weeknd
 ## 测试
 
 ```bash
-# 运行全部 356 个测试
+# 运行全部 391 个测试
 python -m pytest tests/ -v
 
 # 运行特定测试模块
@@ -270,7 +272,7 @@ MelodyMine/
 │   ├── lyrics_client.py       # LRCLIB + 酷我歌词 — 同步 + 普通（仅标准库）
 │   ├── mbrainz_client.py      # MusicBrainz 元数据查询（仅标准库）
 │   └── cover_client.py        # 封面下载（仅标准库）
-├── tests/                     # 356 个单元测试（标准库 unittest + 模拟 HTTP）
+├── tests/                     # 391 个单元测试（标准库 unittest + 模拟 HTTP）
 ├── .github/workflows/ci.yml   # GitHub Actions CI（ruff + pytest）
 ├── SKILL.md                   # AI 助手 Skill 定义
 └── references/                # spotDL CLI & 配置参考文档

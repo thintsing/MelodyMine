@@ -46,8 +46,10 @@ from melodymine_common import (  # noqa: E402
     is_youtube_url,
     make_subprocess_env,
     norm_cn,
+    probe_audio,
     proxy_to_env,
     sanitize_filename,
+    strip_vendor_tag,
     strip_version_tag,
     text_sim,
 )
@@ -751,10 +753,32 @@ class TestScoreMetadataCandidate(unittest.TestCase):
 
     def test_title_contains(self):
         score = _score_metadata_candidate(
-            self._mk("周杰伦", "稻香 (Live)"), "周杰伦", "稻香",
+            self._mk("周杰伦", "稻香 (Remaster)"), "周杰伦", "稻香",
         )
         # artist exact: +20; title partial: +2
         self.assertEqual(score, 22)
+
+    # ── Non-original releases are demoted ──
+    def test_live_title_is_penalised(self):
+        live = _score_metadata_candidate(self._mk("周杰伦", "稻香 (Live)"), "周杰伦", "稻香")
+        studio = _score_metadata_candidate(self._mk("周杰伦", "稻香"), "周杰伦", "稻香")
+        self.assertEqual(live, 16)   # +20 artist, +2 title, -6 live
+        self.assertLess(live, studio)
+
+    def test_live_album_is_penalised(self):
+        # The album name is what lands in the tag, so a concert release must
+        # lose to the studio album even when both match on artist and title.
+        concert = _score_metadata_candidate(
+            self._mk("林俊杰", "江南", album="2006就是俊傑世界巡迴演唱會"), "林俊杰", "江南")
+        studio = _score_metadata_candidate(
+            self._mk("林俊杰", "江南", album="第二天堂"), "林俊杰", "江南")
+        self.assertEqual(concert, 19)
+        self.assertEqual(studio, 25)
+        self.assertLess(concert, studio)
+
+    def test_accompaniment_is_penalised(self):
+        score = _score_metadata_candidate(self._mk("周杰伦", "稻香 伴奏"), "周杰伦", "稻香")
+        self.assertLess(score, 25)
 
     def test_no_match(self):
         score = _score_metadata_candidate(
@@ -1281,6 +1305,105 @@ class TestDownloadAudius(unittest.TestCase):
     def test_catalog_id_key(self):
         self.assertEqual(music_helper._CATALOG_ID_KEY["audius"], "track_id")
 
+
+class TestCjkCatalogueTier(unittest.TestCase):
+    """Auto mode tries the direct CJK catalogues before the video chain."""
+
+    @staticmethod
+    def _run(kugou_ok, kuwo_ok):
+        calls = []
+
+        def handler_for(name, ok):
+            def handler(*_args, **_kwargs):
+                calls.append(name)
+                result = {"ok": ok, "platform": name}
+                if not ok:
+                    result["error"] = f"{name} refused"
+                return result
+            return handler
+
+        with patch.dict(music_helper._PLATFORM_HANDLERS, {
+            "kugou": handler_for("kugou", kugou_ok),
+            "kuwo": handler_for("kuwo", kuwo_ok),
+        }):
+            out = music_helper._download_via_cjk_catalogue(
+                "py", "稻香", tempfile.gettempdir(), "flac", None, 1,
+                False, True, True,
+            )
+        return out, calls
+
+    def test_kugou_is_tried_first_and_wins(self):
+        out, calls = self._run(True, True)
+        self.assertTrue(out["ok"])
+        self.assertEqual(calls, ["kugou"])
+
+    def test_falls_through_to_kuwo(self):
+        out, calls = self._run(False, True)
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["platform"], "kuwo")
+        self.assertEqual(calls, ["kugou", "kuwo"])
+
+    def test_all_failing_returns_none_so_the_chain_continues(self):
+        out, calls = self._run(False, False)
+        self.assertIsNone(out)
+        self.assertEqual(calls, ["kugou", "kuwo"])
+
+
+class TestAutoSearchMirrorsAutoDownload(unittest.TestCase):
+    """`search` must preview the source `download` will actually use."""
+
+    def _cmd_search(self, query):
+        with patch("music_helper.ensure_deps", return_value=("py", None, None)), \
+             patch("music_helper.kugou_client.search", return_value=[]) as kugou, \
+             patch("music_helper._search_youtube", return_value=([], None)) as yt:
+            music_helper.cmd_search(query, platform="auto", json_output=True)
+        return kugou.called, yt.called
+
+    def test_chinese_query_previews_kugou(self):
+        kugou_called, yt_called = self._cmd_search("周杰伦 稻香")
+        self.assertTrue(kugou_called)
+        self.assertFalse(yt_called)
+
+    def test_english_query_still_previews_youtube(self):
+        kugou_called, yt_called = self._cmd_search("The Weeknd Blinding Lights")
+        self.assertFalse(kugou_called)
+        self.assertTrue(yt_called)
+
+    def test_auto_plan_documents_the_tier(self):
+        plan = _download_plan("周杰伦 稻香")
+        self.assertEqual(plan["platform"], "bilibili")
+        self.assertTrue(any("Kugou" in note for note in plan["notes"]))
+
+    def test_explicit_platform_plan_does_not(self):
+        plan = _download_plan("周杰伦 稻香", platform="bilibili")
+        self.assertFalse(any("Kugou" in note for note in plan["notes"]))
+
+class TestStripVendorTag(unittest.TestCase):
+    """strip_vendor_tag: Chinese CDN files carry a reseller stamp in the tag."""
+
+    def test_migu_stamp(self):
+        self.assertEqual(strip_vendor_tag("林俊杰[music.migu.cn]"), "林俊杰")
+
+    def test_full_width_brackets(self):
+        self.assertEqual(strip_vendor_tag("江南（www.kugou.com）"), "江南")
+
+    def test_parentheses(self):
+        self.assertEqual(strip_vendor_tag("齐秦(music.163.com)"), "齐秦")
+
+    def test_clean_value_untouched(self):
+        self.assertEqual(strip_vendor_tag("林俊杰"), "林俊杰")
+
+    def test_version_annotation_is_not_a_vendor(self):
+        self.assertEqual(strip_vendor_tag("江南 (Live)"), "江南 (Live)")
+
+    def test_stamp_must_be_trailing(self):
+        self.assertEqual(strip_vendor_tag("[music.migu.cn] 江南"), "[music.migu.cn] 江南")
+
+    def test_none_and_empty(self):
+        self.assertIsNone(strip_vendor_tag(None))
+        self.assertEqual(strip_vendor_tag(""), "")
+
+
 class TestReadAudioTags(unittest.TestCase):
     """read_audio_tags: parse `ffmpeg -f ffmetadata` output."""
 
@@ -1315,6 +1438,128 @@ class TestReadAudioTags(unittest.TestCase):
         with patch("metadata.find_ffmpeg", return_value="ffmpeg"), \
              patch("metadata.subprocess.run", side_effect=OSError("boom")):
             self.assertEqual(metadata.read_audio_tags("song.mp3"), (None, None))
+
+    def test_vendor_stamp_is_stripped(self):
+        out = ";FFMETADATA1\nartist=林俊杰[music.migu.cn]\ntitle=江南[music.migu.cn]\n"
+        self.assertEqual(self._run(out), ("林俊杰", "江南"))
+
+    def test_raw_reader_keeps_the_stamp(self):
+        # enhance_metadata needs to see it, or it cannot tell a stamped file
+        # from a properly tagged one.
+        out = ";FFMETADATA1\nartist=林俊杰[music.migu.cn]\ntitle=江南\n"
+        with patch("metadata.find_ffmpeg", return_value="ffmpeg"), \
+             patch("metadata.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=out, returncode=0)
+            self.assertEqual(metadata._read_raw_tags("song.mp3", python="py"),
+                             ("林俊杰[music.migu.cn]", "江南"))
+
+
+class TestAlbumCoverSelection(unittest.TestCase):
+    """enhance_metadata: album from the winner, cover from whoever has one.
+
+    Reproduces the 林俊杰/江南 lookup: the concert release carries the artwork but
+    loses on score, so the studio album has to borrow its cover.
+    """
+
+    CONCERT = {"artist": "林俊傑", "title": "江南",
+               "album": "2006就是俊傑世界巡迴演唱會", "pic_url": "http://mb/cover.jpg"}
+    STUDIO = {"artist": "林俊杰", "title": "江南", "album": "第二天堂"}
+
+    def _run(self, mb, ne, it=()):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "raw.mp3")
+            with open(path, "wb") as f:
+                f.write(b"x" * 1024)
+            with patch("metadata._read_raw_tags", return_value=(None, None)), \
+                 patch("metadata.mbrainz_client.lookup", return_value=list(mb)), \
+                 patch("metadata.netease_client.search", return_value=list(ne)), \
+                 patch("metadata.itunes_search", return_value=list(it)), \
+                 patch("metadata.cover_client.download",
+                       return_value=os.path.join(tmp, "c.jpg")) as mock_cover, \
+                 patch("metadata.set_metadata", return_value=True) as mock_set, \
+                 patch("metadata._fetch_and_save_lyrics", return_value=None):
+                metadata.enhance_metadata("林俊杰 江南", None, tmp, filepath=path)
+            album = mock_set.call_args.kwargs["album"]
+            cover = mock_cover.call_args[0][0] if mock_cover.call_args else None
+        return album, cover
+
+    def test_cover_falls_back_to_the_runner_up(self):
+        self.assertEqual(self._run([self.CONCERT], [self.STUDIO]),
+                         ("第二天堂", "http://mb/cover.jpg"))
+
+    def test_winner_keeps_its_own_cover(self):
+        studio = dict(self.STUDIO, pic_url="http://ne/cover.jpg")
+        self.assertEqual(self._run([self.CONCERT], [studio]),
+                         ("第二天堂", "http://ne/cover.jpg"))
+
+    def test_no_cover_anywhere(self):
+        concert = {k: v for k, v in self.CONCERT.items() if k != "pic_url"}
+        self.assertEqual(self._run([concert], [self.STUDIO]), ("第二天堂", None))
+
+    def test_itunes_cover_key_is_honoured(self):
+        it = [{"artist": "JJ Lin", "title": "江南", "album": "第二天堂",
+               "cover": "http://it/cover.jpg"}]
+        self.assertEqual(self._run([], [self.STUDIO], it),
+                         ("第二天堂", "http://it/cover.jpg"))
+
+    def test_tie_goes_to_the_corroborated_album(self):
+        # MusicBrainz resolves 江南 to a various-artists compilation that scores
+        # exactly as well as the studio album the other two agree on.
+        comp = {"artist": "林俊傑", "title": "江南", "album": "群星靓点屋",
+                "pic_url": "http://mb/cover.jpg"}
+        it = [{"artist": "JJ Lin", "title": "江南", "album": "第二天堂 (台壓版)",
+               "cover": "http://it/cover.jpg"}]
+        self.assertEqual(self._run([comp], [self.STUDIO], it),
+                         ("第二天堂", "http://mb/cover.jpg"))
+
+
+class TestPickMetadataSource(unittest.TestCase):
+    """_pick_metadata_source: score wins, ties go to the corroborated album."""
+
+    def _pick(self, *candidates):
+        src, _score, data = metadata._pick_metadata_source(list(candidates))
+        return src, data.get("album")
+
+    def test_single_candidate(self):
+        self.assertEqual(self._pick(("MusicBrainz", 5, {"album": "A"})),
+                         ("MusicBrainz", "A"))
+
+    def test_highest_score_wins(self):
+        self.assertEqual(
+            self._pick(("MusicBrainz", 19, {"album": "演唱会"}),
+                       ("NetEase", 25, {"album": "第二天堂"})),
+            ("NetEase", "第二天堂"),
+        )
+
+    def test_untied_leader_is_not_overruled(self):
+        self.assertEqual(
+            self._pick(("MusicBrainz", 30, {"album": "群星靓点屋"}),
+                       ("NetEase", 25, {"album": "第二天堂"}),
+                       ("iTunes", 25, {"album": "第二天堂"})),
+            ("MusicBrainz", "群星靓点屋"),
+        )
+
+    def test_tie_prefers_the_corroborated_album(self):
+        self.assertEqual(
+            self._pick(("MusicBrainz", 25, {"album": "群星靓点屋"}),
+                       ("NetEase", 25, {"album": "第二天堂"}),
+                       ("iTunes", 10, {"album": "第二天堂 (台壓版)"})),
+            ("NetEase", "第二天堂"),
+        )
+
+    def test_tie_without_corroboration_keeps_the_first(self):
+        self.assertEqual(
+            self._pick(("MusicBrainz", 25, {"album": "甲"}),
+                       ("NetEase", 25, {"album": "乙"})),
+            ("MusicBrainz", "甲"),
+        )
+
+    def test_missing_album_never_corroborates(self):
+        self.assertEqual(
+            self._pick(("MusicBrainz", 25, {}),
+                       ("NetEase", 25, {"album": ""})),
+            ("MusicBrainz", None),
+        )
 
 
 class TestIterAudioFiles(unittest.TestCase):
@@ -1360,42 +1605,91 @@ class TestLyricsTarget(unittest.TestCase):
         self.assertEqual(music_helper._lyrics_target(None, None, "01.mp3"), (None, None))
 
 
-class TestProbeDuration(unittest.TestCase):
-    """_probe_duration: parse ffmpeg's stderr header."""
+class TestProbeAudio(unittest.TestCase):
+    """probe_audio: parse duration and codec out of ffmpeg's stderr header."""
 
     STDERR = ("Input #0, mp3, from 'song.mp3':\n  Duration: 00:05:09.58, "
-              "start: 0.025, bitrate: 128 kb/s\n    Stream #0:0: Audio: mp3\n")
+              "start: 0.025, bitrate: 128 kb/s\n    Stream #0:0: Audio: mp3 "
+              "(Layer 3), 44100 Hz, stereo, fltp, 320 kb/s\n")
 
     def _run(self, stderr, ffmpeg="ffmpeg", exc=None):
-        with patch("music_helper.subprocess.run") as mock_run:
+        with patch("melodymine_common.find_ffmpeg", return_value=ffmpeg), \
+             patch("melodymine_common.subprocess.run") as mock_run:
             if exc:
                 mock_run.side_effect = exc
             else:
                 mock_run.return_value = MagicMock(stderr=stderr, returncode=1)
-            return music_helper._probe_duration(ffmpeg, "song.mp3")
+            return probe_audio("song.mp3", python="py")
 
-    def test_parses_duration(self):
-        self.assertAlmostEqual(self._run(self.STDERR), 309.58, places=2)
+    def test_parses_duration_and_codec(self):
+        duration, codec = self._run(self.STDERR)
+        self.assertAlmostEqual(duration, 309.58, places=2)
+        self.assertEqual(codec, "mp3")
 
     def test_hours_component(self):
-        self.assertAlmostEqual(self._run("  Duration: 01:02:03.50\n"), 3723.5, places=2)
+        duration, _ = self._run("  Duration: 01:02:03.50\n")
+        self.assertAlmostEqual(duration, 3723.5, places=2)
+
+    def test_flac_codec(self):
+        _, codec = self._run("  Duration: 00:04:27.00\n Stream #0:0: Audio: flac, 44100 Hz\n")
+        self.assertEqual(codec, "flac")
 
     def test_no_duration_line(self):
-        self.assertIsNone(self._run("Input #0: garbage\n"))
+        self.assertEqual(self._run("Input #0: garbage\n"), (None, None))
 
     def test_no_ffmpeg(self):
-        self.assertIsNone(self._run(self.STDERR, ffmpeg=None))
+        self.assertEqual(self._run(self.STDERR, ffmpeg=None), (None, None))
 
     def test_subprocess_failure(self):
-        self.assertIsNone(self._run(self.STDERR, exc=OSError("boom")))
+        self.assertEqual(self._run(self.STDERR, exc=OSError("boom")), (None, None))
+
+
+class TestVerifyAudioFile(unittest.TestCase):
+    """verify_audio_file: reports duration and codec via ffmpeg, not ffprobe."""
+
+    def _verify(self, size=5 * 1024 * 1024, probe=(267.0, "flac")):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "song.flac")
+            with open(path, "wb") as f:
+                f.write(b"\0" * size)
+            with patch("metadata.probe_audio", return_value=probe) as mock_probe:
+                out = metadata.verify_audio_file(path, python="py")
+        return out, mock_probe.call_args_list
+
+    def test_reports_duration_and_codec(self):
+        out, calls = self._verify()
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["duration_str"], "4:27")
+        self.assertEqual(out["codec"], "flac")
+        self.assertEqual(out["size_mb"], 5.0)
+        # The interpreter must reach probe_audio, or imageio-ffmpeg is never found.
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0][1], "py")
+
+    def test_unreadable_duration_still_passes_on_size(self):
+        out, _ = self._verify(probe=(None, None))
+        self.assertTrue(out["ok"])
+        self.assertNotIn("duration_str", out)
+        self.assertIn("size check only", out["note"])
+
+    def test_tiny_file_is_rejected_before_probing(self):
+        out, calls = self._verify(size=10 * 1024)
+        self.assertFalse(out["ok"])
+        self.assertIn("too small", out["error"])
+        self.assertEqual(calls, [])
+
+    def test_missing_file(self):
+        out = metadata.verify_audio_file(os.path.join(tempfile.gettempdir(), "nope.flac"))
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["error"], "file not found")
 
 
 class TestPreviewClipError(unittest.TestCase):
     """_preview_clip_error: VIP tracks resolve to ~11s clips, not songs."""
 
     def _run(self, actual, expected=223):
-        with patch("music_helper._probe_duration", return_value=actual):
-            return music_helper._preview_clip_error("ffmpeg", "song.mp3", expected)
+        with patch("music_helper.probe_audio", return_value=(actual, "mp3")):
+            return music_helper._preview_clip_error("py", "song.mp3", expected)
 
     def test_full_length_passes(self):
         self.assertIsNone(self._run(222.9))
@@ -1410,8 +1704,8 @@ class TestPreviewClipError(unittest.TestCase):
         self.assertIsNotNone(self._run(111.4))
 
     def test_unknown_expected_duration_is_not_checked(self):
-        with patch("music_helper._probe_duration") as mock_probe:
-            self.assertIsNone(music_helper._preview_clip_error("ffmpeg", "s.mp3", 0))
+        with patch("music_helper.probe_audio") as mock_probe:
+            self.assertIsNone(music_helper._preview_clip_error("py", "s.mp3", 0))
         self.assertFalse(mock_probe.called)
 
     def test_unreadable_duration_passes(self):

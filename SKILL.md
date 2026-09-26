@@ -69,9 +69,9 @@ Read `references/usage.md` only when the user needs advanced spotDL options. Rea
    - Spotify URL: pass the URL to `music_helper.py download`.
    - NetEase URL (`music.163.com/song?id=xxx`): pass the URL to `music_helper.py download` — it resolves the song name first, then downloads via NetEase direct → Bilibili → YouTube.
    - Bilibili URL (`bilibili.com/video/BV...`, `/list/...?bvid=`, or a `b23.tv` short link): pass the URL as-is — it is routed straight to Bilibili with no search step. The bvid is extracted when present; `b23.tv` short links are handed to yt-dlp, which follows the redirect.
-   - Query containing Chinese characters: use auto mode, which prefers Soulseek → Bilibili → YouTube.
+   - Query containing Chinese characters: use auto mode, which prefers Kugou → Kuwo → Soulseek → Bilibili → YouTube. The two CJK catalogues answer from their own CDN with the ranked studio original, so this is both faster and more accurate than searching a video platform.
    - English or non-Chinese query: use auto mode, which prefers Soulseek → YouTube.
-   - Force `--platform kuwo` or `--platform kugou` when auto mode returns a cover, a live version, or a low-bitrate file — both catalogues rank the studio original first and download straight from the CDN.
+   - Force `--platform bilibili` when you specifically want a video-platform upload (live sets, remixes, MV audio) rather than the catalogue original.
 4. Add options requested by the user. If the user wants a fast download without Soulseek, add `--quick`.
 5. Run the command.
 6. Report the saved path, format, fallback tier, and any warning.
@@ -234,6 +234,8 @@ python scripts/music_helper.py search "周杰伦 稻香" --platform kugou --json
 - `--limit N`: number of results (default 5).
 - `--json`: emit one JSON line with `ok`, `platform`, `count` and the raw `results`.
 
+In auto mode `search` resolves to the same source `download` would try first — Kugou for a Chinese query, YouTube otherwise — so `--index N` means the same thing in both commands.
+
 `music_helper.py lyrics-sync "directory"` supports:
 
 - `--overwrite`: re-fetch lyrics for tracks that already have a `.lrc`.
@@ -247,7 +249,7 @@ Tracks whose title cannot be determined — no usable tags and a filename like `
 
 | Input | Primary Path | Notes |
 | --- | --- | --- |
-| Chinese query | Soulseek → Bilibili → YouTube | Soulseek first (lossless P2P, ~30s timeout), then Bilibili, then YouTube as last resort. Use `--quick` to skip Soulseek. |
+| Chinese query | Kugou → Kuwo → Soulseek → Bilibili → YouTube | The CJK catalogues are tried first: direct CDN, native FLAC, studio original ranked to the top, ~15s and no proxy. Each failure falls through to the next tier, so a VIP-only or missing track still ends up downloaded. Use `--quick` to skip Soulseek. |
 | English/non-Chinese query | Soulseek → YouTube | Soulseek first, then YouTube. Use `--quick` to skip Soulseek. Add proxy only after network failure. |
 | Spotify URL | spotDL through `music_helper.py` | May need proxy in restricted regions. For playlist sync use `spotify_helper.py`. |
 | NetEase URL (`music.163.com/song?id=xxx`) | NetEase direct → Bilibili/YouTube | Resolves song name via NetEase API, tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube. |
@@ -271,8 +273,8 @@ Execute the first matching row. Do not explain the table to the user — just ru
 | YouTube `Sign in to confirm you're not a bot` | Ask the user to export cookies.txt (e.g. via "Get cookies.txt" browser extension for YouTube), then retry: `download "<query>" --cookies /path/cookies.txt`. |
 | Spotify `KeyError: 'uri'` | Extract the track name from the Spotify URL or ask the user for it, then download by name instead: `download "Artist Song"`. Do not retry the same Spotify URL. |
 | `No results` on any platform | Try: (1) `Artist Title` format, (2) force the other platform via `--platform`, (3) broaden the query. Try up to 2 variants before reporting failure to the user. |
-| `Source returned a preview clip` / `VIP/preview-only` | The platform only licenses a snippet of that track — the file is deleted, nothing was saved. Retry the same query with a different catalogue: `--platform kugou`, then `--platform kuwo`, then auto mode. Do not retry the same platform. |
-| Downloaded file is a cover, live or 伴奏 version | Re-run with `--platform kugou` or `--platform kuwo`, which rank the studio original first. If the original still is not first, run `search "<query>" --platform kugou --json`, pick the right `hash`/`music_id` by artist, and re-download with `--index N`. |
+| `Source returned a preview clip` / `VIP/preview-only` | The platform only licenses a snippet of that track — the file is deleted, nothing was saved. Auto mode already falls through to the next tier on its own, so this only surfaces when a platform was forced. Retry with `--platform kugou`, or drop `--platform` entirely and let auto mode walk the chain. Do not retry the same platform. |
+| Downloaded file is a cover, live or 伴奏 version | Auto mode already ranks those below the studio original, so this means the catalogue's top hit genuinely is a cover. Run `search "<query>" --platform kugou --json`, pick the right `hash` by artist, and re-download with `--platform kugou --index N`. |
 | `lyrics-sync` reports a high `not_found` count | LRCLIB has no synced lyrics for those tracks. Report the count and the filenames — do not loop. For a specific track you know the real artist/title of, run `meta "<filepath>" --query "Artist - Title"` instead. |
 | Soulseek `no results` | Ensure `SLSK_USERNAME` and `SLSK_PASSWORD` are set. Try a broader query with fewer words. |
 | Soulseek `credentials not set` / `SLSK_USERNAME not set` | Ask the user to provide Soulseek credentials (set env vars `SLSK_USERNAME` and `SLSK_PASSWORD`, or pass `--slsk-user` `--slsk-pass`). If unavailable, retry with `--quick` to skip Soulseek. |

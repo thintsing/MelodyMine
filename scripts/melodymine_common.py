@@ -518,6 +518,45 @@ def find_ffmpeg(python=None):
     return None
 
 
+_DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_AUDIO_CODEC_RE = re.compile(r"Audio:\s*([A-Za-z0-9_]+)")
+
+
+def probe_audio(filepath, python=None):
+    """Read an audio file's duration in seconds and its codec.
+
+    Returns ``(duration_s, codec)``; either is None when it cannot be read.
+    Never raises.
+
+    Parses ``ffmpeg -i`` rather than shelling out to ffprobe: the bundled
+    imageio-ffmpeg build ships ffmpeg only, so an ffprobe-based probe silently
+    found nothing on machines without a system install. ffmpeg writes the
+    format header to stderr and exits non-zero when given no output file, so
+    the text is the only thing worth looking at.
+    """
+    ffmpeg_exe = find_ffmpeg(python)
+    if not ffmpeg_exe:
+        return None, None
+    try:
+        result = subprocess.run(
+            [ffmpeg_exe, "-i", filepath],
+            capture_output=True, text=True, timeout=30,
+            encoding="utf-8", errors="replace",
+        )
+    except Exception as e:
+        debug_log(f"probe_audio failed for {filepath}: {e}")
+        return None, None
+
+    stderr = result.stderr or ""
+    duration = None
+    m = _DURATION_RE.search(stderr)
+    if m:
+        hours, minutes, seconds = m.groups()
+        duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    codec_match = _AUDIO_CODEC_RE.search(stderr)
+    return duration, (codec_match.group(1) if codec_match else None)
+
+
 # ─── Proxy helpers ───────────────────────────────────────────────────────
 
 def is_socks_proxy(proxy_url):
@@ -676,6 +715,21 @@ def strip_version_tag(text):
         if stripped == text:
             return stripped
         text = stripped
+
+
+# Chinese CDN files come back with the reseller stamped into the tag, e.g.
+# "林俊杰[music.migu.cn]". Left in place it breaks the album/cover lookup and
+# the lyrics search alike, so it is stripped wherever a tag is read.
+_VENDOR_TAG_RE = re.compile(
+    r"[\[（(【]\s*[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*\.[A-Za-z]{2,}\s*[\]）)】]\s*$"
+)
+
+
+def strip_vendor_tag(text):
+    """Drop a trailing reseller/domain stamp: ``林俊杰[music.migu.cn]`` → ``林俊杰``."""
+    if not text:
+        return text
+    return _VENDOR_TAG_RE.sub("", text).strip()
 
 
 # ─── Language / URL detection ────────────────────────────────────────────

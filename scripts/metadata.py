@@ -28,7 +28,9 @@ from melodymine_common import (
     is_accompaniment,
     is_derivative,
     norm_cn,
+    probe_audio,
     sanitize_filename,
+    strip_vendor_tag,
     strip_version_tag,
     text_sim,
 )
@@ -229,10 +231,10 @@ def rank_search_results(results, query=None):
 
 # ─── Audio tag I/O ─────────────────────────────────────────────────────
 
-def read_audio_tags(filepath, python=None):
-    """Read artist and title tags from an audio file via ffmpeg.
+def _read_raw_tags(filepath, python=None):
+    """Read the artist and title tags exactly as stored in the file.
 
-    Returns (artist, title) tuple. Each is None if missing or unreadable.
+    Returns (artist, title). Each is None if missing or unreadable.
     Never raises — returns (None, None) on any failure.
 
     Uses ``ffmpeg -f ffmetadata`` rather than ffprobe: the bundled
@@ -263,6 +265,16 @@ def read_audio_tags(filepath, python=None):
         tags.setdefault(key.strip().lower(), value.strip())
 
     return tags.get("artist") or None, tags.get("title") or None
+
+
+def read_audio_tags(filepath, python=None):
+    """Read artist and title tags, with any reseller stamp removed.
+
+    Chinese CDN files arrive tagged like ``林俊杰[music.migu.cn]``; the stamp is
+    not part of the name and ruins every lookup it is fed to.
+    """
+    artist, title = _read_raw_tags(filepath, python)
+    return strip_vendor_tag(artist), strip_vendor_tag(title)
 
 
 def set_metadata(filepath, title=None, artist=None, album=None, cover_path=None):
@@ -402,6 +414,14 @@ def _score_metadata_candidate(r, artist, title, *, collaboration_aware=False, bo
             score += 3
         if r.get("album"):
             score += 2
+
+    # A live or cover release matches on artist/title text just as well as the
+    # studio original, but its album name is what gets written into the tag.
+    # Without this a concert album wins ties — 江南 came back tagged as
+    # "2006就是俊傑世界巡迴演唱會" instead of "第二天堂".
+    release = norm_cn(f"{r_title} {r.get('album') or ''}")
+    if is_derivative(release) or is_accompaniment(release):
+        score -= 6
     return score
 
 
@@ -416,6 +436,35 @@ def _best_metadata_candidate(results, artist, title, **kwargs):
         if score > best_score:
             best_score, best_data = score, r
     return best_score, best_data
+
+
+def _candidate_cover(source, data):
+    """Cover URL carried by a metadata candidate; the field name differs per source."""
+    return (data.get("cover") if source == "iTunes" else data.get("pic_url")) or ""
+
+
+def _pick_metadata_source(candidates):
+    """Choose which lookup result supplies the album tag.
+
+    ``candidates`` is a list of ``(source, score, data)``, one per source that
+    answered. The highest score normally wins, but MusicBrainz resolves a song to
+    *a* release rather than *the* release, so for a well-known track it regularly
+    offers a various-artists compilation that scores exactly as well as the studio
+    album the other two agree on — 江南 came back tagged "群星靓点屋" that way. On a
+    tie, prefer the album another source corroborates.
+    """
+    albums = [(src, norm_cn((data.get("album") or "").strip().lower()))
+              for src, _score, data in candidates]
+    top = max(score for _src, score, _data in candidates)
+    tied = [c for c in candidates if c[1] == top]
+    if len(tied) == 1:
+        return tied[0]
+    for src, score, data in tied:
+        album = norm_cn((data.get("album") or "").strip().lower())
+        if album and any(other and (album in other or other in album)
+                         for other_src, other in albums if other_src != src):
+            return (src, score, data)
+    return tied[0]
 
 
 # ─── Lyrics helper ──────────────────────────────────────────────────────
@@ -448,7 +497,9 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
     Layer 1: Parse user's search query
     Layer 2: MusicBrainz + NetEase + iTunes queried concurrently, each scored
     Layer 3: Parse Bilibili video title (fallback for artist/title only)
-    The highest-scoring source wins; ties broken by cover availability.
+    The highest-scoring source wins the album tag, with score ties broken by
+    cross-source agreement; the cover comes from the winner, or from the next
+    source that has one.
     When ``embed_thumbnail`` is False, cover art is neither downloaded nor
     embedded (respects --no-thumbnail).
     Never raises — metadata enhancement is best-effort.
@@ -469,8 +520,14 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
         return
 
     # ── Skip if file already has meaningful metadata ──
-    existing_artist, existing_title = read_audio_tags(filepath)
-    if existing_artist and existing_title:
+    # A reseller stamp is not meaningful metadata: the file still has no album
+    # or cover, and the stamped name breaks the lyrics search. Those files go
+    # through enhancement so their tags get rewritten properly.
+    raw_artist, raw_title = _read_raw_tags(filepath)
+    existing_artist = strip_vendor_tag(raw_artist)
+    existing_title = strip_vendor_tag(raw_title)
+    unstamped = (existing_artist, existing_title) == (raw_artist, raw_title)
+    if existing_artist and existing_title and unstamped:
         print(f"\n  File already tagged: {existing_artist} - {existing_title}")
         print("  Skipping metadata enhancement.")
         if fetch_lyrics:
@@ -545,28 +602,28 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
     if not candidates:
         album, pic_url, source = "", "", "parsed query"
     else:
-        def sort_key(item):
-            src, score, data = item
-            has_cover = 1 if (src == "iTunes" and data.get("cover")) or data.get("pic_url") else 0
-            return (score, has_cover)
+        candidates.sort(key=lambda item: item[1], reverse=True)
+        source, _best_score, best_data = _pick_metadata_source(candidates)
+        album = (best_data.get("album") or "").strip()
+        pic_url = _candidate_cover(source, best_data)
 
-        candidates.sort(key=sort_key, reverse=True)
-        source, best_score, best_data = candidates[0]
-
-        if source == "MusicBrainz":
-            pic_url = best_data.get("pic_url", "")
-            album = best_data.get("album", "").strip()
-        elif source == "NetEase":
-            pic_url = best_data.get("pic_url", "")
-            album = best_data.get("album", "").strip()
-        else:  # iTunes
-            pic_url = best_data.get("cover", "")
-            album = best_data.get("album", "").strip()
+    # The album name is what lands in the tag, so it has to come from the winner —
+    # but the winner is not obliged to have artwork, and shipping the file with no
+    # cover is worse than borrowing another source's.
+    cover_source = source
+    if not pic_url:
+        for other, _other_score, other_data in candidates:
+            if other == source:
+                continue
+            pic_url = _candidate_cover(other, other_data)
+            if pic_url:
+                cover_source = other
+                break
 
     if album:
         print(f"  Album: {album} (from {source})")
     if pic_url:
-        print(f"  Cover: available (from {source})")
+        print(f"  Cover: available (from {cover_source})")
     else:
         print("  Cover: not available")
 
@@ -614,11 +671,12 @@ def enhance_metadata(search_query, bili_title, output_dir, embed_thumbnail=True,
 
 # ─── Audio file integrity check ───────────────────────────────────────
 
-def verify_audio_file(filepath, min_size_kb=100):
+def verify_audio_file(filepath, min_size_kb=100, python=None):
     """Quick integrity check on a downloaded audio file.
 
-    Uses ffprobe to confirm the file is a valid, playable audio file.
-    Reports file size and duration.
+    Confirms the file is a valid, playable audio file and reports its size,
+    duration and codec. ``python`` should be the interpreter that has
+    imageio-ffmpeg installed, otherwise only the size can be checked.
 
     Returns a dict::
         {"ok": True, "size_mb": 5.2, "duration_s": 210.5, "codec": "mp3"}
@@ -636,42 +694,18 @@ def verify_audio_file(filepath, min_size_kb=100):
     if size_kb < min_size_kb:
         return {"ok": False, "error": f"file too small ({size_kb:.0f} KB)", "path": filepath}
 
-    ffmpeg_exe = find_ffmpeg()
-    if not ffmpeg_exe:
-        return {"ok": True, "size_mb": size_mb, "note": "ffprobe unavailable, size check only"}
+    duration_s, codec = probe_audio(filepath, python)
+    if duration_s is None:
+        return {"ok": True, "size_mb": round(size_mb, 1), "codec": codec,
+                "note": "ffmpeg unavailable, size check only", "path": filepath}
 
-    ffprobe_exe = os.path.join(os.path.dirname(ffmpeg_exe), "ffprobe")
-    if os.name == "nt":
-        ffprobe_exe += ".exe"
-    if not os.path.isfile(ffprobe_exe):
-        ffprobe_exe = "ffprobe"
-
-    try:
-        result = subprocess.run(
-            [ffprobe_exe, "-v", "error",
-             "-show_entries", "format=duration,format_name",
-             "-of", "csv=p=0",
-             filepath],
-            capture_output=True, text=True, timeout=15,
-            encoding="utf-8", errors="replace",
-        )
-        if result.returncode != 0:
-            return {"ok": False, "error": f"ffprobe failed: {result.stderr[:200]}", "path": filepath}
-
-        parts = result.stdout.strip().split(",")
-        duration_s = float(parts[0]) if len(parts) >= 1 and parts[0] else None
-        codec = parts[1] if len(parts) >= 2 and parts[1] else None
-
-        mins = int(duration_s // 60) if duration_s else 0
-        secs = int(duration_s % 60) if duration_s else 0
-
-        return {
-            "ok": True,
-            "size_mb": round(size_mb, 1),
-            "duration_s": duration_s,
-            "duration_str": f"{mins}:{secs:02d}" if duration_s else "?",
-            "codec": codec,
-            "path": filepath,
-        }
-    except Exception as e:
-        return {"ok": True, "size_mb": round(size_mb, 1), "note": f"ffprobe error ({e}), size OK"}
+    mins = int(duration_s // 60)
+    secs = int(duration_s % 60)
+    return {
+        "ok": True,
+        "size_mb": round(size_mb, 1),
+        "duration_s": duration_s,
+        "duration_str": f"{mins}:{secs:02d}",
+        "codec": codec,
+        "path": filepath,
+    }

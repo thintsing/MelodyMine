@@ -59,6 +59,7 @@ from melodymine_common import (
     is_youtube_url,
     make_subprocess_env,
     pip_install,
+    probe_audio,
     run_streaming,
     sanitize_filename,
     set_debug,
@@ -297,6 +298,10 @@ def _download_plan(
 
     if selected == "bilibili":
         url_slot = "https://www.bilibili.com/video/<bvid>"
+        if platform == "auto":
+            notes.append("Chinese query in auto mode: the direct CJK catalogues "
+                         f"({' → '.join(c.capitalize() for c in _CJK_CATALOGUES)}) are tried "
+                         "first; the chain below only runs if they all fail.")
         notes.append("Bilibili dry-run: bvid is resolved at runtime via wbi search.")
         notes.append("Priority: Soulseek → Bilibili → YouTube.")
     else:
@@ -414,7 +419,7 @@ def _finalize_download_result(result, output):
     if not filepath:
         return result
 
-    verify = verify_audio_file(filepath)
+    verify = verify_audio_file(filepath, python=sys.executable)
     if verify.get("ok"):
         result["file"] = verify.get("path", filepath)
         result["size_mb"] = verify.get("size_mb")
@@ -1032,6 +1037,10 @@ def cmd_search(query, platform="auto", limit=5, proxy=None, json_output=False):
 
     if platform == "auto":
         platform = auto_select_platform(query)
+        # Mirror cmd_download: auto mode downloads a Chinese query from the
+        # direct CJK catalogues first, so that is what --index N selects from.
+        if platform == "bilibili":
+            platform = _CJK_CATALOGUES[0]
 
     if not json_output:
         print(f"Searching on {platform} for: {query}")
@@ -1481,28 +1490,7 @@ def _sniff_audio_ext(path):
     return None
 
 
-def _probe_duration(ffmpeg_exe, path):
-    """Read a file's duration in seconds, or None if it cannot be determined."""
-    if not ffmpeg_exe:
-        return None
-    try:
-        result = subprocess.run(
-            [ffmpeg_exe, "-i", path],
-            capture_output=True, text=True, timeout=30,
-            encoding="utf-8", errors="replace",
-        )
-    except Exception:
-        return None
-    # ffmpeg prints the format header to stderr and exits non-zero when given
-    # no output file, so the text is the only thing worth looking at.
-    m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", result.stderr or "")
-    if not m:
-        return None
-    hours, minutes, seconds = m.groups()
-    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
-
-
-def _preview_clip_error(ffmpeg_exe, path, expected_secs):
+def _preview_clip_error(py, path, expected_secs):
     """Reject a download that is a licensed-track preview rather than the song.
 
     CJK catalogues answer VIP tracks with an ~11s clip that is still large
@@ -1512,7 +1500,7 @@ def _preview_clip_error(ffmpeg_exe, path, expected_secs):
     """
     if not expected_secs:
         return None
-    actual = _probe_duration(ffmpeg_exe, path)
+    actual, _codec = probe_audio(path, py)
     if actual is None or actual >= expected_secs * 0.5:
         return None
     print(f"  [!] Source returned a {actual:.0f}s clip, not the full "
@@ -1529,26 +1517,33 @@ def _kuwo_quality_for_fmt(fmt):
     return "lossless"
 
 
-def _download_kuwo(
-    py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-    no_metadata, cookies, before, slsk_user, slsk_pass, quick,
-    fetch_lyrics=True,
-):
-    """Kuwo pipeline: search → direct CDN download → metadata."""
+def _catalogue_failure(platform, query, error):
+    """Uniform failure result for the direct-API catalogues."""
+    return {"ok": False, "platform": platform, "query": query, "error": error}
+
+
+def _search_catalogue(platform, label, search_fn, id_key, query, index, fmt, output):
+    """Banner, search a direct-API catalogue, rank it and pick one entry.
+
+    Returns ``(item, failure)``; exactly one is None. Ranking happens before the
+    pick so accompaniments, covers and live recordings sink below the studio
+    original and ``index`` 1 is the best match the catalogue actually has.
+    """
+    name = platform.capitalize()
     print("=" * 60)
-    print("  Platform : Kuwo (酷我音乐)")
+    print(f"  Platform : {label}")
     print(f"  Query    : {query}")
     print(f"  Format   : {fmt}")
     print(f"  Output   : {output}")
     print("=" * 60)
     print()
 
-    print("[1/3] Searching Kuwo...")
-    results = kuwo_client.search(query, limit=max(index, 5))
+    print(f"[1/3] Searching {name}...")
+    results = search_fn(query, limit=max(index, 5))
     if not results:
-        print("\n  Kuwo search returned no results.")
-        return {"ok": False, "platform": "kuwo", "query": query,
-                "error": "Kuwo search returned no results"}
+        print(f"\n  {name} search returned no results.")
+        return None, _catalogue_failure(
+            platform, query, f"{name} search returned no results")
 
     results = rank_search_results(results, query)
     demoted = sum(1 for r in results
@@ -1557,28 +1552,38 @@ def _download_kuwo(
         print(f"  (优先原版，已将 {demoted} 个伴奏/翻唱/现场版本排后)")
 
     item = results[min(index - 1, len(results) - 1)]
-    music_id = item["music_id"]
-    title = item["title"]
-    artist = item["artist"]
     dur = item.get("duration", 0)
     dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
-    print(f"  Found: {artist} - {title}  [{dur_str}]")
-    print(f"  music_id: {music_id}")
+    print(f"  Found: {item.get('artist') or '?'} - {item['title']}  [{dur_str}]")
+    print(f"  {id_key}: {item[id_key]}")
     print()
+    return item, None
 
+
+def _download_kuwo(
+    py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+    no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+    fetch_lyrics=True,
+):
+    """Kuwo pipeline: search → direct CDN download → metadata."""
+    item, failure = _search_catalogue("kuwo", "Kuwo (酷我音乐)", kuwo_client.search,
+                                      "music_id", query, index, fmt, output)
+    if failure:
+        return failure
+
+    music_id = item["music_id"]
     quality = _kuwo_quality_for_fmt(fmt)
     print(f"[2/3] Resolving download URL (quality={quality})...")
     audio_url = kuwo_client.get_download_url(music_id, quality=quality)
     if not audio_url:
         print("  Failed to resolve download URL.")
-        return {"ok": False, "platform": "kuwo", "query": query,
-                "error": "Kuwo download URL resolution failed"}
+        return _catalogue_failure("kuwo", query, "Kuwo download URL resolution failed")
     debug_log(f"kuwo url resolved: {audio_url[:80]}...")
 
     return _download_and_tag(
         "kuwo", "kuwo-api-direct", query, output, fmt, bitrate, py,
-        audio_url, f"_kuwo_raw_{music_id}", artist, title, dur,
-        embed_thumbnail, no_metadata, fetch_lyrics,
+        audio_url, f"_kuwo_raw_{music_id}", item.get("artist"), item["title"],
+        item.get("duration", 0), embed_thumbnail, no_metadata, fetch_lyrics,
         headers={"User-Agent": kuwo_client.UA, "Referer": "http://www.kuwo.cn/"},
     )
 
@@ -1589,48 +1594,23 @@ def _download_kugou(
     fetch_lyrics=True,
 ):
     """Kugou pipeline: search → direct CDN download → metadata."""
-    print("=" * 60)
-    print("  Platform : Kugou (酷狗音乐)")
-    print(f"  Query    : {query}")
-    print(f"  Format   : {fmt}")
-    print(f"  Output   : {output}")
-    print("=" * 60)
-    print()
+    item, failure = _search_catalogue("kugou", "Kugou (酷狗音乐)", kugou_client.search,
+                                      "hash", query, index, fmt, output)
+    if failure:
+        return failure
 
-    print("[1/3] Searching Kugou...")
-    results = kugou_client.search(query, limit=max(index, 5))
-    if not results:
-        print("\n  Kugou search returned no results.")
-        return {"ok": False, "platform": "kugou", "query": query,
-                "error": "Kugou search returned no results"}
-
-    results = rank_search_results(results, query)
-    demoted = sum(1 for r in results
-                  if is_accompaniment(r.get("title", "")) or is_derivative(r.get("title", "")))
-    if demoted:
-        print(f"  (优先原版，已将 {demoted} 个伴奏/翻唱/现场版本排后)")
-
-    item = results[min(index - 1, len(results) - 1)]
     song_hash = item["hash"]
-    title = item["title"]
-    artist = item["artist"]
-    dur = item.get("duration", 0)
-    dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
-    print(f"  Found: {artist} - {title}  [{dur_str}]")
-    print(f"  hash: {song_hash}")
-    print()
-
     print("[2/3] Resolving download URL...")
     audio_url = kugou_client.get_download_url(song_hash)
     if not audio_url:
         print("  Failed to resolve download URL.")
-        return {"ok": False, "platform": "kugou", "query": query,
-                "error": "Kugou download URL resolution failed"}
+        return _catalogue_failure("kugou", query, "Kugou download URL resolution failed")
     debug_log(f"kugou url resolved: {audio_url[:80]}...")
 
     return _download_and_tag(
         "kugou", "kugou-api-direct", query, output, fmt, bitrate, py,
-        _plain_http(audio_url), f"_kugou_raw_{song_hash}", artist, title, dur,
+        _plain_http(audio_url), f"_kugou_raw_{song_hash}", item.get("artist"),
+        item["title"], item.get("duration", 0),
         embed_thumbnail, no_metadata, fetch_lyrics,
         headers={"User-Agent": kugou_client.UA, "Referer": "https://www.kugou.com/"},
     )
@@ -1681,7 +1661,7 @@ def _download_and_tag(platform, engine, query, output, fmt, bitrate, py,
 
     ffmpeg_exe = find_ffmpeg(py)
 
-    clip_error = _preview_clip_error(ffmpeg_exe, raw_path, expected_dur)
+    clip_error = _preview_clip_error(py, raw_path, expected_dur)
     if clip_error:
         return _reject(clip_error)
 
@@ -1728,44 +1708,23 @@ def _download_audius(
     fetch_lyrics=True,
 ):
     """Audius pipeline: search → stream URL → metadata."""
-    print("=" * 60)
-    print("  Platform : Audius")
-    print(f"  Query    : {query}")
-    print(f"  Format   : {fmt}")
-    print(f"  Output   : {output}")
-    print("=" * 60)
-    print()
+    item, failure = _search_catalogue("audius", "Audius (去中心化音乐)", audius_client.search,
+                                      "track_id", query, index, fmt, output)
+    if failure:
+        return failure
 
-    print("[1/3] Searching Audius...")
-    results = audius_client.search(query, limit=max(index, 5))
-    if not results:
-        print("\n  Audius search returned no results.")
-        return {"ok": False, "platform": "audius", "query": query,
-                "error": "Audius search returned no results"}
-
-    results = rank_search_results(results, query)
-    item = results[min(index - 1, len(results) - 1)]
     track_id = item["track_id"]
-    title = item["title"]
-    artist = item["artist"]
-    dur = item.get("duration", 0)
-    dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
-    print(f"  Found: {artist} - {title}  [{dur_str}]")
-    print(f"  track_id: {track_id}")
-    print()
-
     print("[2/3] Resolving stream URL...")
     audio_url = audius_client.get_stream_url(track_id)
     if not audio_url:
         print("  Failed to resolve stream URL.")
-        return {"ok": False, "platform": "audius", "query": query,
-                "error": "Audius stream URL resolution failed"}
+        return _catalogue_failure("audius", query, "Audius stream URL resolution failed")
     debug_log(f"audius url resolved: {audio_url[:80]}...")
 
     return _download_and_tag(
         "audius", "audius-api-direct", query, output, fmt, bitrate, py,
-        audio_url, f"_audius_raw_{track_id}", artist, title, dur,
-        embed_thumbnail, no_metadata, fetch_lyrics,
+        audio_url, f"_audius_raw_{track_id}", item.get("artist"), item["title"],
+        item.get("duration", 0), embed_thumbnail, no_metadata, fetch_lyrics,
         headers={"User-Agent": audius_client.UA},
     )
 
@@ -1781,6 +1740,36 @@ _PLATFORM_HANDLERS = {
     "ytmusic": "ytmusic",   # handled inline (has its own before_snapshot)
     "soulseek": "soulseek",  # handled inline (no fallback)
 }
+
+# Chinese queries in auto mode try these before the video-platform chain.
+# Kugou first: it carries native FLAC, while Kuwo's last-resort resolver is
+# MP3-only and hands back an ~11s preview for licensed tracks.
+_CJK_CATALOGUES = ("kugou", "kuwo")
+
+
+def _download_via_cjk_catalogue(
+    py, query, output, fmt, bitrate, index, embed_thumbnail, no_metadata,
+    fetch_lyrics, catalogues=_CJK_CATALOGUES,
+):
+    """Try the direct CJK catalogues in order. Returns None if all failed.
+
+    These answer from their own CDN with the ranked studio original, so they
+    beat searching a video platform for someone's upload — faster, lossless,
+    and no proxy. Every failure falls through, including a licensed track that
+    only yields a preview clip, so the caller's normal chain still runs.
+    """
+    for name in catalogues:
+        result = _PLATFORM_HANDLERS[name](
+            py, query, output, fmt, None, bitrate, index, embed_thumbnail,
+            no_metadata, None, [], None, None, False,
+            fetch_lyrics=fetch_lyrics,
+        )
+        if result.get("ok"):
+            return result
+        debug_log(f"cjk catalogue {name} failed: {result.get('error')}")
+        print(f"\n  [!] {name.capitalize()} 未能提供完整音频"
+              f"（{result.get('error')}），改用其他来源…\n")
+    return None
 
 
 def cmd_download(
@@ -1852,7 +1841,8 @@ def cmd_download(
         )
 
     # ── Search-based platforms ──
-    if platform == "auto":
+    auto = platform == "auto"
+    if auto:
         platform = auto_select_platform(query)
         debug_log(f"auto-selected platform: {platform}")
 
@@ -1860,6 +1850,15 @@ def cmd_download(
         output = DEFAULT_OUTPUT
     os.makedirs(output, exist_ok=True)
     before = _list_audio_files(output)
+
+    # Auto mode only — an explicit --platform is a request for that source.
+    if auto and platform == "bilibili":
+        result = _download_via_cjk_catalogue(
+            py, query, output, fmt, bitrate, index, embed_thumbnail,
+            no_metadata, fetch_lyrics,
+        )
+        if result:
+            return result
 
     handler = _PLATFORM_HANDLERS.get(platform)
     if handler == "soulseek":
