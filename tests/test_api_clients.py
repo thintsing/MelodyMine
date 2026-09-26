@@ -155,6 +155,37 @@ class TestBiliClient(unittest.TestCase):
         self._plain_patcher.start()  # Restore mock for other tests
 
 
+class TestBiliGetInfo(unittest.TestCase):
+    """bili_client.get_info: resolve a known bvid without searching."""
+
+    @patch("urllib.request.urlopen")
+    def test_success(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_urlopen(json_data={
+            "code": 0,
+            "data": {
+                "bvid": "BV1TfN2emEZh",
+                "title": "【开口跪】《你不要担心》",
+                "duration": 351,
+                "owner": {"name": "4K音乐馆"},
+            },
+        })
+        info = bili_client.get_info("BV1TfN2emEZh")
+        self.assertEqual(info["bvid"], "BV1TfN2emEZh")
+        self.assertEqual(info["title"], "【开口跪】《你不要担心》")
+        self.assertEqual(info["uploader"], "4K音乐馆")
+        self.assertEqual(info["duration"], "5:51")
+
+    @patch("urllib.request.urlopen")
+    def test_api_error_returns_none(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_urlopen(json_data={"code": -404, "message": "啥都木有"})
+        self.assertIsNone(bili_client.get_info("BVnonexistent1"))
+
+    @patch("urllib.request.urlopen")
+    def test_network_error_returns_none(self, mock_urlopen):
+        mock_urlopen.side_effect = OSError("timeout")
+        self.assertIsNone(bili_client.get_info("BV1TfN2emEZh"))
+
+
 class TestNeteaseClient(unittest.TestCase):
 
     @patch("urllib.request.urlopen")

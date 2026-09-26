@@ -39,10 +39,13 @@ from melodymine_common import (
     check_version_compat,
     debug_log,
     derive_query_from_filename,
+    enable_utf8_stdio,
+    extract_bilibili_bvid,
     extract_netease_song_id,
     find_ffmpeg,
     find_python,
     is_bandcamp_url,
+    is_bilibili_url,
     is_direct_download_url,
     is_netease_url,
     is_soundcloud_url,
@@ -222,6 +225,37 @@ def _download_plan(
             "metadata": not no_metadata,
             "command": command,
             "notes": [f"{src}: direct URL download via yt-dlp (no search step)."] + ([auto_note] if auto_note else []),
+        }
+
+    # A pasted Bilibili link names the video already — no search step.
+    if is_bilibili_url(query) and platform in ("auto", "bilibili"):
+        bvid = extract_bilibili_bvid(query)
+        url = f"https://www.bilibili.com/video/{bvid}" if bvid else query
+        command = _build_ytdlp_cmd(
+            "python", url, output, cmd_fmt, cmd_bitrate,
+            embed_thumbnail=embed_thumbnail, bili_ua=True,
+            index=1, proxy=proxy, cookies=cookies,
+        )
+        notes = ["Bilibili URL: direct download of the given video id (no search step)."]
+        if not bvid:
+            notes.append("Short link carries no bvid; yt-dlp follows the redirect.")
+        if auto_note:
+            notes.append(auto_note)
+        return {
+            "ok": True,
+            "dry_run": True,
+            "engine": "yt-dlp",
+            "platform": "bilibili",
+            "query": query,
+            "format": fmt,
+            "output": output,
+            "proxy": proxy,
+            "cookies": cookies,
+            "index": 1,
+            "embed_thumbnail": embed_thumbnail,
+            "metadata": not no_metadata,
+            "command": command,
+            "notes": notes,
         }
 
     selected = auto_select_platform(query) if platform == "auto" else platform
@@ -1058,18 +1092,27 @@ def _soulseek_with_fallback(py, query, output, fmt, proxy, bitrate, index,
 def _download_bilibili(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
     no_metadata, cookies, before, slsk_user, slsk_pass, quick,
-    fetch_lyrics=True,
+    fetch_lyrics=True, bili_url=None,
 ):
-    """Bilibili pipeline: Soulseek → wbi search + yt-dlp → API direct → YouTube."""
-    # Tier 1: Soulseek P2P
-    slsk_result = _soulseek_with_fallback(
-        py, query, output, fmt, proxy, bitrate, index,
-        embed_thumbnail, no_metadata, cookies, before,
-        slsk_user, slsk_pass, quick, fallback_platform="Bilibili",
-        fetch_lyrics=fetch_lyrics,
-    )
-    if slsk_result:
-        return slsk_result
+    """Bilibili pipeline: Soulseek → wbi search + yt-dlp → API direct → YouTube.
+
+    ``bili_url`` is set when the user pasted a Bilibili link. The Soulseek and
+    search tiers are then skipped: searching a URL used to match whatever
+    Bilibili's relevance ranking returned, which was often an unrelated video.
+    """
+    direct = bili_url is not None
+    bvid = extract_bilibili_bvid(bili_url) if direct else None
+
+    if not direct:
+        # Tier 1: Soulseek P2P
+        slsk_result = _soulseek_with_fallback(
+            py, query, output, fmt, proxy, bitrate, index,
+            embed_thumbnail, no_metadata, cookies, before,
+            slsk_user, slsk_pass, quick, fallback_platform="Bilibili",
+            fetch_lyrics=fetch_lyrics,
+        )
+        if slsk_result:
+            return slsk_result
 
     # Tier 2: Bilibili wbi search + yt-dlp download
     print("=" * 60)
@@ -1080,65 +1123,92 @@ def _download_bilibili(
     print("=" * 60)
     print()
 
-    print("[1/3] Searching Bilibili...")
-    results = bili_client.search(query, limit=max(index, 5))
-    if not results:
-        print("\n  Bilibili search failed (rate-limited or network issue).")
-        print("  Falling back to YouTube...")
-        return _do_youtube_download(
-            py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-            no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
-            fetch_lyrics=fetch_lyrics,
-        )
+    if direct:
+        # b23.tv short links carry no id — let yt-dlp follow the redirect.
+        url = f"https://www.bilibili.com/video/{bvid}" if bvid else bili_url
+        info = bili_client.get_info(bvid) if bvid else None
+        item = info or {"bvid": bvid or "", "title": "", "duration": ""}
+        print(f"[1/3] Using the video id from the URL ({bvid or 'short link'})...")
+        if info:
+            print(f"  Found: [{info['duration']}] {info['title']}")
+            if info.get("uploader"):
+                print(f"  UP主  : {info['uploader']}")
+        print()
+        print("[2/3] Downloading via yt-dlp...")
+    else:
+        print("[1/3] Searching Bilibili...")
+        results = bili_client.search(query, limit=max(index, 5))
+        if not results:
+            print("\n  Bilibili search failed (rate-limited or network issue).")
+            print("  Falling back to YouTube...")
+            return _do_youtube_download(
+                py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+                no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
+                fetch_lyrics=fetch_lyrics,
+            )
 
-    results = rank_bili_results(results)
-    skipped_accomp = sum(1 for r in results if _is_accompaniment(r.get("title", "")))
-    if skipped_accomp:
-        print(f"  (优先选择带人声版本，已将 {skipped_accomp} 个伴奏/纯音乐结果排后)")
+        results = rank_bili_results(results)
+        skipped_accomp = sum(1 for r in results if _is_accompaniment(r.get("title", "")))
+        if skipped_accomp:
+            print(f"  (优先选择带人声版本，已将 {skipped_accomp} 个伴奏/纯音乐结果排后)")
 
-    item = results[min(index - 1, len(results) - 1)]
-    bvid = item["bvid"]
-    url = f"https://www.bilibili.com/video/{bvid}"
-    print(f"  Found: [{item['duration']}] {item['title']}")
-    print(f"  bvid: {bvid}")
-    print()
-    print("[2/3] Downloading via yt-dlp...")
+        item = results[min(index - 1, len(results) - 1)]
+        bvid = item["bvid"]
+        url = f"https://www.bilibili.com/video/{bvid}"
+        print(f"  Found: [{item['duration']}] {item['title']}")
+        print(f"  bvid: {bvid}")
+        print()
+        print("[2/3] Downloading via yt-dlp...")
+
+    meta_query = query if not direct else (item.get("title") or "")
 
     actual_fmt, actual_bitrate = fmt, bitrate
     if fmt == "auto":
-        _, codec = _bili_resolve_audio(bvid, python=py)
+        _, codec = (_bili_resolve_audio(bvid, python=py) if bvid else (None, None))
         actual_fmt, actual_bitrate, reason = _resolve_auto_fmt(codec, bitrate)
         print(f"  [auto] {reason}")
 
     if _ytdlp_download(py, url, output, actual_fmt, actual_bitrate, embed_thumbnail,
                        bili_ua=True, index=1, cookies=cookies):
         if not no_metadata:
-            enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail,
+            enhance_metadata(meta_query, item.get("title", ""), output,
+                             embed_thumbnail=embed_thumbnail,
                              before_snapshot=before, fetch_lyrics=fetch_lyrics)
         print("\n[OK] Download complete!")
         print(f"     Files saved to: {output}")
         return {"ok": True, "platform": "bilibili", "engine": "yt-dlp",
-                "query": query, "source_url": url, "format": actual_fmt,
+                "query": meta_query or query, "source_url": url, "format": actual_fmt,
                 "output": output, "proxy": proxy, "cookies": cookies,
-                "metadata": not no_metadata, "fallback": "bilibili-after-soulseek"}
+                "metadata": not no_metadata,
+                "fallback": "none" if direct else "bilibili-after-soulseek"}
 
     # Tier 3: Bilibili API direct download
     print("\n  yt-dlp download failed (likely 412 Precondition Failed).")
-    if _bili_api_download(bvid, output, actual_fmt, actual_bitrate, python=py):
+    if bvid and _bili_api_download(bvid, output, actual_fmt, actual_bitrate, python=py):
         if not no_metadata:
-            enhance_metadata(query, item["title"], output, embed_thumbnail=embed_thumbnail,
+            enhance_metadata(meta_query, item.get("title", ""), output,
+                             embed_thumbnail=embed_thumbnail,
                              before_snapshot=before, fetch_lyrics=fetch_lyrics)
         print("\n[OK] Download complete (via Bilibili API direct)!")
         print(f"     Files saved to: {output}")
         return {"ok": True, "platform": "bilibili", "engine": "bili-api-direct",
-                "query": query, "source_url": url, "format": actual_fmt,
+                "query": meta_query or query, "source_url": url, "format": actual_fmt,
                 "output": output, "metadata": not no_metadata,
-                "fallback": "bili-api-direct-after-soulseek"}
+                "fallback": "bili-api-direct"}
+
+    if direct and not meta_query:
+        # A pasted URL is not a usable search string — retrying on YouTube
+        # would only return a different song.
+        print("\n  Bilibili download failed and no title could be resolved "
+              "for a YouTube fallback.")
+        return {"ok": False, "platform": "bilibili", "query": query,
+                "source_url": url,
+                "error": "Bilibili download failed (yt-dlp and API direct)"}
 
     # Tier 4: YouTube fallback
     print("\n  Bilibili all tiers failed. Falling back to YouTube...")
     result = _do_youtube_download(
-        py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+        py, meta_query or query, output, fmt, proxy, bitrate, index, embed_thumbnail,
         no_metadata=no_metadata, cookies=cookies, before_snapshot=before,
         fetch_lyrics=fetch_lyrics,
     )
@@ -1292,7 +1362,7 @@ def _download_kuwo(
             fetch_lyrics=fetch_lyrics,
         )
 
-    print(f"\n[OK] Download complete!")
+    print("\n[OK] Download complete!")
     print(f"     Files saved to: {output}")
     return {
         "ok": True, "platform": "kuwo", "engine": "kuwo-api-direct",
@@ -1365,6 +1435,20 @@ def cmd_download(
         return _download_direct(py, query, fmt, output, proxy, bitrate,
                                 index, embed_thumbnail, no_metadata, cookies,
                                 fetch_lyrics=fetch_lyrics)
+
+    # A pasted Bilibili link already names the video — download that exact one
+    # instead of searching for it.
+    if is_bilibili_url(query) and platform in ("auto", "bilibili"):
+        debug_log(f"route: bilibili url → direct (bvid={extract_bilibili_bvid(query)})")
+        if not output:
+            output = DEFAULT_OUTPUT
+        os.makedirs(output, exist_ok=True)
+        before = _list_audio_files(output)
+        return _download_bilibili(
+            py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+            no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+            fetch_lyrics=fetch_lyrics, bili_url=query,
+        )
 
     # ── Search-based platforms ──
     if platform == "auto":
@@ -1911,6 +1995,7 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
 # ─── CLI ─────────────────────────────────────────────────────────────────
 
 def main():
+    enable_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="MelodyMine - Multi-platform audio downloader",
         formatter_class=argparse.RawDescriptionHelpFormatter,

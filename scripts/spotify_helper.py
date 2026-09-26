@@ -40,6 +40,7 @@ from melodymine_common import (
     check_module,
     derive_query_from_filename,
     detect_python_with,
+    enable_utf8_stdio,
     find_ffmpeg,
     find_python,
     is_socks_proxy,
@@ -318,6 +319,7 @@ def check_install():
 
 # --- Main ---
 def main():
+    enable_utf8_stdio()
     parser = argparse.ArgumentParser(
         description="MelodyMine Spotify helper - download Spotify music via YouTube + ffmpeg",
         formatter_class=argparse.RawDescriptionHelpFormatter,

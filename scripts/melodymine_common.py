@@ -60,6 +60,16 @@ BANDCAMP_RE = re.compile(
     r"https?://[\w\-]+\.bandcamp\.com/track/[\w\-]+"
 )
 
+# Bilibili URLs come in several shapes — /video/BVxxx, share short links, and
+# playlist pages that only carry the id in a query param
+# (bilibili.com/list/mlNNN?oid=...&bvid=BVxxx). Match the domain and pull the
+# id out separately so all of them resolve to the same video.
+BILIBILI_RE = re.compile(
+    r"https?://(?:www\.|m\.)?(?:bilibili\.com|b23\.tv)/\S*"
+)
+# BV ids are "BV" + 10 base58 characters.
+BVID_RE = re.compile(r"\b(BV[0-9A-Za-z]{10})\b")
+
 # Unified venv path shared by both helpers so dependencies are installed once.
 VENV_DIR = os.path.join(HOME, ".cache", "melodymine-venv")
 
@@ -640,6 +650,22 @@ def is_bandcamp_url(text):
     return bool(BANDCAMP_RE.search(text))
 
 
+def is_bilibili_url(text):
+    """Check if text contains a Bilibili video/share URL."""
+    return bool(BILIBILI_RE.search(text))
+
+
+def extract_bilibili_bvid(text):
+    """Extract a BV id from a Bilibili URL. Returns str or None.
+
+    Handles both ``/video/BVxxx`` paths and the ``?bvid=BVxxx`` query param
+    that Bilibili's playlist/share pages use. ``b23.tv`` short links carry no
+    id — callers should hand those to yt-dlp, which follows the redirect.
+    """
+    m = BVID_RE.search(text)
+    return m.group(1) if m else None
+
+
 def is_direct_download_url(text):
     """Check if text is a URL that yt-dlp can download directly (no search needed).
 
@@ -674,6 +700,22 @@ def derive_query_from_filename(filepath):
 
 
 # ─── Subprocess helpers ───────────────────────────────────────────────────
+
+
+def enable_utf8_stdio():
+    """Force stdout/stderr to UTF-8 so CJK/Korean titles can't crash a run.
+
+    Windows consoles default to the OEM codepage (GBK on zh-CN systems), which
+    raises ``UnicodeEncodeError`` on characters outside it — Korean text, rare
+    CJK ideographs, emoji. That kills a download *after* the audio is already
+    on disk. Unencodable characters are replaced rather than raising; losing a
+    glyph in the console is far cheaper than losing the run.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
 
 
 def make_subprocess_env():

@@ -10,23 +10,29 @@ parse_search_query, parse_bili_title, _clean_artist, _norm_cn,
 auto_select_platform, is_spotify_url, sanitize_filename, is_chinese.
 """
 
+import io
 import os
 import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import MagicMock, patch
 
 # Make the scripts directory importable regardless of CWD.
 _SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "scripts")
 sys.path.insert(0, os.path.abspath(_SCRIPTS))
 
+import music_helper  # noqa: E402  (for patching _PLATFORM_HANDLERS)
 from melodymine_common import (  # noqa: E402
     auto_select_platform,
     build_spotdl_proxy_args,
     check_version_compat,
     derive_query_from_filename,
+    enable_utf8_stdio,
+    extract_bilibili_bvid,
     extract_netease_song_id,
     is_bandcamp_url,
+    is_bilibili_url,
     is_chinese,
     is_direct_download_url,
     is_netease_url,
@@ -54,7 +60,9 @@ from metadata import (
 )
 from music_helper import (  # noqa: E402
     _auto_fmt_from_codec,
+    _download_plan,
     _resolve_auto_fmt,
+    cmd_download,
 )
 
 
@@ -302,6 +310,47 @@ class TestIsBandcampUrl(unittest.TestCase):
         self.assertFalse(is_bandcamp_url("https://soundcloud.com/artist/song"))
 
 
+class TestIsBilibiliUrl(unittest.TestCase):
+
+    def test_video_url(self):
+        self.assertTrue(is_bilibili_url("https://www.bilibili.com/video/BV1TfN2emEZh"))
+
+    def test_playlist_url_with_bvid_param(self):
+        self.assertTrue(is_bilibili_url(
+            "https://www.bilibili.com/list/ml1266054064?oid=113973030556081&bvid=BV1TfN2emEZh"))
+
+    def test_short_link(self):
+        self.assertTrue(is_bilibili_url("https://b23.tv/abcDEF"))
+
+    def test_mobile_url(self):
+        self.assertTrue(is_bilibili_url("https://m.bilibili.com/video/BV1xx411c7mD"))
+
+    def test_non_bilibili(self):
+        self.assertFalse(is_bilibili_url("https://youtu.be/abc123"))
+        self.assertFalse(is_bilibili_url("周杰伦 稻香"))
+
+
+class TestExtractBilibiliBvid(unittest.TestCase):
+
+    def test_from_video_path(self):
+        self.assertEqual(extract_bilibili_bvid(
+            "https://www.bilibili.com/video/BV1TfN2emEZh"), "BV1TfN2emEZh")
+
+    def test_from_query_param(self):
+        self.assertEqual(extract_bilibili_bvid(
+            "https://www.bilibili.com/list/ml1266054064?oid=113973030556081&bvid=BV1TfN2emEZh"),
+            "BV1TfN2emEZh")
+
+    def test_short_link_has_no_bvid(self):
+        self.assertIsNone(extract_bilibili_bvid("https://b23.tv/abcDEF"))
+
+    def test_plain_query(self):
+        self.assertIsNone(extract_bilibili_bvid("周杰伦 稻香"))
+
+    def test_truncated_id_not_matched(self):
+        self.assertIsNone(extract_bilibili_bvid("https://www.bilibili.com/video/BV1Tf"))
+
+
 class TestIsDirectDownloadUrl(unittest.TestCase):
 
     def test_youtube_is_direct(self):
@@ -318,6 +367,10 @@ class TestIsDirectDownloadUrl(unittest.TestCase):
 
     def test_netease_is_not_direct(self):
         self.assertFalse(is_direct_download_url("https://music.163.com/song?id=123"))
+
+    def test_bilibili_is_not_direct(self):
+        # Bilibili needs its own UA + API fallback chain, so it routes separately.
+        self.assertFalse(is_direct_download_url("https://www.bilibili.com/video/BV1TfN2emEZh"))
 
 
 class TestIsChinese(unittest.TestCase):
@@ -842,6 +895,128 @@ class TestMakeSubprocessEnv(unittest.TestCase):
         env = make_subprocess_env()
         self.assertIn("PATH", env)
         self.assertIn("SYSTEMROOT" if os.name == "nt" else "HOME", env)
+
+
+class TestEnableUtf8Stdio(unittest.TestCase):
+    """enable_utf8_stdio: a GBK console must not be able to crash a run."""
+
+    def _with_gbk_streams(self):
+        sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="gbk", errors="strict")
+        sys.stderr = io.TextIOWrapper(io.BytesIO(), encoding="gbk", errors="strict")
+
+    def test_switches_gbk_stream_to_utf8(self):
+        saved_out, saved_err = sys.stdout, sys.stderr
+        try:
+            self._with_gbk_streams()
+            enable_utf8_stdio()
+            self.assertEqual(sys.stdout.encoding.lower(), "utf-8")
+            self.assertEqual(sys.stdout.errors, "replace")
+            self.assertEqual(sys.stderr.encoding.lower(), "utf-8")
+            # Korean text is outside GBK — this used to raise mid-download.
+            sys.stdout.write("你不要担心 (김범수)")
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+
+    def test_idempotent(self):
+        saved = sys.stdout
+        try:
+            sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8")
+            enable_utf8_stdio()
+            enable_utf8_stdio()
+            self.assertEqual(sys.stdout.encoding.lower(), "utf-8")
+        finally:
+            sys.stdout = saved
+
+    def test_tolerates_stream_without_reconfigure(self):
+        class NoReconfigure:
+            encoding = "ascii"
+            errors = "strict"
+
+        saved = sys.stdout
+        try:
+            sys.stdout = NoReconfigure()
+            enable_utf8_stdio()
+        finally:
+            sys.stdout = saved
+
+
+class TestDownloadPlanBilibiliUrl(unittest.TestCase):
+    """_download_plan: a pasted Bilibili URL must target that exact video."""
+
+    URL = ("https://www.bilibili.com/list/ml1266054064"
+           "?oid=113973030556081&bvid=BV1TfN2emEZh")
+
+    @staticmethod
+    def _cmd(plan):
+        return " ".join(str(part) for part in plan["command"])
+
+    def test_platform_is_bilibili(self):
+        plan = _download_plan(self.URL)
+        self.assertEqual(plan["platform"], "bilibili")
+        self.assertEqual(plan["engine"], "yt-dlp")
+
+    def test_command_targets_bvid_not_a_search(self):
+        cmd = self._cmd(_download_plan(self.URL))
+        self.assertIn("https://www.bilibili.com/video/BV1TfN2emEZh", cmd)
+        self.assertNotIn("ytsearch", cmd)
+
+    def test_notes_explain_the_skipped_search(self):
+        plan = _download_plan(self.URL)
+        self.assertTrue(any("no search step" in n for n in plan["notes"]))
+
+    def test_explicit_platform_flag_agrees(self):
+        self.assertEqual(_download_plan(self.URL, platform="bilibili")["platform"], "bilibili")
+
+    def test_short_link_passed_through_for_redirect(self):
+        cmd = self._cmd(_download_plan("https://b23.tv/abcDEF"))
+        self.assertIn("https://b23.tv/abcDEF", cmd)
+
+    def test_plain_chinese_query_still_searches(self):
+        plan = _download_plan("周杰伦 稻香")
+        self.assertEqual(plan["platform"], "bilibili")
+        self.assertIn("<bvid>", self._cmd(plan))
+
+    def test_plain_english_query_still_searches(self):
+        plan = _download_plan("The Weeknd Blinding Lights")
+        self.assertEqual(plan["platform"], "youtube")
+        self.assertIn("ytsearch:", self._cmd(plan))
+
+
+class TestBilibiliUrlRouting(unittest.TestCase):
+    """cmd_download: a pasted Bilibili link must skip search and Soulseek."""
+
+    URL = ("https://www.bilibili.com/list/ml1266054064"
+           "?oid=113973030556081&bvid=BV1TfN2emEZh")
+
+    def _call(self, platform):
+        mock_bili = MagicMock(return_value={"ok": True, "platform": "bilibili"})
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("music_helper.ensure_deps", return_value=("python", "1.0", None)), \
+                 patch("music_helper._download_bilibili", mock_bili):
+                cmd_download(self.URL, platform=platform, output=tmp)
+        return mock_bili
+
+    def test_auto_mode_passes_the_url_through(self):
+        mock_bili = self._call("auto")
+        self.assertTrue(mock_bili.called)
+        self.assertEqual(mock_bili.call_args.kwargs.get("bili_url"), self.URL)
+
+    def test_explicit_bilibili_platform_is_also_direct(self):
+        self.assertEqual(self._call("bilibili").call_args.kwargs.get("bili_url"), self.URL)
+
+    def test_unrelated_platform_flag_is_respected(self):
+        # _PLATFORM_HANDLERS binds the functions at import time, so patch the
+        # dict entry rather than the module attribute.
+        mock_kuwo = MagicMock(return_value={"ok": True})
+        handlers = dict(music_helper._PLATFORM_HANDLERS)
+        handlers["kuwo"] = mock_kuwo
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("music_helper.ensure_deps", return_value=("python", "1.0", None)), \
+                 patch("music_helper._download_bilibili") as mock_bili, \
+                 patch("music_helper._PLATFORM_HANDLERS", handlers):
+                cmd_download(self.URL, platform="kuwo", output=tmp)
+        self.assertFalse(mock_bili.called)
+        self.assertTrue(mock_kuwo.called)
 
 
 if __name__ == "__main__":

@@ -182,6 +182,37 @@ def search(query, limit=5, timeout=10):
     return []
 
 
+def get_info(bvid, timeout=10):
+    """Fetch a video's title/uploader/duration by bvid (no search needed).
+
+    Returns {bvid, title, uploader, duration} or None on failure. Used by the
+    direct-URL download path, where the id is already known.
+    """
+    params = urllib.parse.urlencode({"bvid": bvid})
+    url = f"https://api.bilibili.com/x/web-interface/view?{params}"
+    req = urllib.request.Request(url)
+    req.add_header("User-Agent", UA)
+    req.add_header("Referer", "https://www.bilibili.com/")
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+    if data.get("code") != 0:
+        return None
+
+    d = data.get("data") or {}
+    secs = int(d.get("duration") or 0)
+    return {
+        "bvid": d.get("bvid", bvid),
+        "title": d.get("title", ""),
+        "uploader": (d.get("owner") or {}).get("name", ""),
+        "duration": f"{secs // 60}:{secs % 60:02d}" if secs else "",
+    }
+
+
 if __name__ == "__main__":
     q = sys.argv[1] if len(sys.argv) > 1 else ""
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 5
