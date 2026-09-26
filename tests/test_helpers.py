@@ -1222,6 +1222,23 @@ class TestDownloadPlanKugou(unittest.TestCase):
         self.assertIn("kugou_client.search", _download_plan("稻香", platform="kugou")["command"])
 
 
+class TestPrintPlan(unittest.TestCase):
+    """_print_plan: the command is an argv list for yt-dlp, a string for direct API."""
+
+    def _render(self, plan):
+        with patch("sys.stdout", new_callable=io.StringIO) as buf:
+            music_helper._print_plan(plan)
+        return buf.getvalue()
+
+    def test_string_command_is_not_split_into_characters(self):
+        out = self._render(_download_plan("strobe", platform="audius"))
+        self.assertIn("Command  : audius_client.search('strobe')", out)
+
+    def test_argv_command_is_joined_with_spaces(self):
+        out = self._render(_download_plan("The Weeknd Blinding Lights"))
+        self.assertIn("Command  : python -m yt_dlp ", out)
+
+
 class TestDownloadKugou(unittest.TestCase):
     """_download_kugou failure paths (no network)."""
 

@@ -351,7 +351,11 @@ def _print_plan(plan):
         print(f"Proxy    : {plan['proxy']}")
     if plan.get("cookies"):
         print(f"Cookies  : {plan['cookies']}")
-    print("Command  : " + " ".join(str(part) for part in plan["command"]))
+    # yt-dlp and spotDL plans carry an argv list; the direct-API plans carry a
+    # human-readable string, since there is no subprocess to spell out.
+    command = plan["command"]
+    print("Command  : " + (command if isinstance(command, str)
+                          else " ".join(str(part) for part in command)))
     for note in plan.get("notes", []):
         print(f"Note     : {note}")
 
