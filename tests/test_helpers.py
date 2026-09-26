@@ -1233,6 +1233,54 @@ class TestDownloadKugou(unittest.TestCase):
         self.assertIn("network down", out["error"])
 
 
+class TestDownloadAudius(unittest.TestCase):
+    """_download_audius failure paths (no network), plus CLI registration."""
+
+    @staticmethod
+    def _call(results, url="https://api.audius.co/v1/tracks/abc/stream"):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("music_helper.audius_client.search", return_value=results), \
+                 patch("music_helper.audius_client.get_stream_url", return_value=url), \
+                 patch("urllib.request.urlopen") as mock_open:
+                mock_open.side_effect = Exception("network down")
+                return music_helper._download_audius(
+                    "python", "strobe", tmp, "mp3", None, None, 1, False,
+                    True, None, [], None, None, False,
+                )
+
+    RESULT = {"title": "Strobe", "artist": "deadmau5",
+              "track_id": "7YmNr", "duration": 61}
+
+    def test_no_search_results(self):
+        out = self._call([])
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["platform"], "audius")
+        self.assertIn("no results", out["error"])
+
+    def test_unresolvable_stream_url(self):
+        out = self._call([self.RESULT], url=None)
+        self.assertFalse(out["ok"])
+        self.assertIn("URL resolution failed", out["error"])
+
+    def test_network_error_reported(self):
+        out = self._call([self.RESULT])
+        self.assertFalse(out["ok"])
+        self.assertIn("network down", out["error"])
+
+    def test_registered_in_dispatch_table(self):
+        # SKILL.md advertises --platform audius; argparse must actually accept it.
+        self.assertIs(music_helper._PLATFORM_HANDLERS["audius"],
+                      music_helper._download_audius)
+
+    def test_dry_run_plan(self):
+        plan = _download_plan("strobe", platform="audius")
+        self.assertEqual(plan["platform"], "audius")
+        self.assertEqual(plan["engine"], "audius-api-direct")
+        self.assertIn("audius_client.search", plan["command"])
+
+    def test_catalog_id_key(self):
+        self.assertEqual(music_helper._CATALOG_ID_KEY["audius"], "track_id")
+
 class TestReadAudioTags(unittest.TestCase):
     """read_audio_tags: parse `ffmpeg -f ffmetadata` output."""
 

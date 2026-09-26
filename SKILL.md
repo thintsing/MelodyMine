@@ -1,6 +1,6 @@
 ---
 name: melodymine
-description: "Download music with MelodyMine from Bilibili, YouTube, YouTube Music, Spotify URLs, NetEase URLs, Kuwo, Audius, and Soulseek P2P. Use when the user asks to download/save songs, albums, playlists, music URLs, Chinese songs, English songs, Spotify tracks, NetEase/网易云 links, Bilibili/YouTube audio, FLAC/MP3 music, lyrics/歌词, or says phrases like 下载歌曲, 下载音乐, 下载这首歌, 下载歌单, 下载这个链接, 用 MelodyMine 下载, download music, download song, save this track, sync Spotify playlist."
+description: "Download music with MelodyMine from Bilibili, YouTube, YouTube Music, Spotify URLs, NetEase URLs, Kuwo, Kugou, Audius, and Soulseek P2P. Use when the user asks to download/save songs, albums, playlists, music URLs, Chinese songs, English songs, Spotify tracks, NetEase/网易云 links, Bilibili/YouTube audio, FLAC/MP3 music, lyrics/歌词, backfill lyrics for a library, or says phrases like 下载歌曲, 下载音乐, 下载这首歌, 下载歌单, 下载这个链接, 用 MelodyMine 下载, download music, download song, save this track, sync Spotify playlist."
 ---
 
 # MelodyMine
@@ -51,6 +51,14 @@ python scripts/music_helper.py meta "/path/to/song.mp3"
 python scripts/music_helper.py meta "/path/to/song.mp3" --query "周杰伦 稻香"
 ```
 
+Backfill lyrics for a whole library with `music_helper.py lyrics-sync`. It reads each track's tags (or falls back to its filename), fetches synced lyrics, and writes a sibling `.lrc` with the same basename. The audio files are never modified:
+
+```bash
+python scripts/music_helper.py lyrics-sync "/path/to/music"
+python scripts/music_helper.py lyrics-sync "/path/to/music" --dry-run
+python scripts/music_helper.py lyrics-sync "/path/to/music" --overwrite --json
+```
+
 Read `references/usage.md` only when the user needs advanced spotDL options. Read `references/config.md` only when editing or explaining spotDL configuration.
 
 ## Download Workflow
@@ -60,8 +68,10 @@ Read `references/usage.md` only when the user needs advanced spotDL options. Rea
 3. Select platform:
    - Spotify URL: pass the URL to `music_helper.py download`.
    - NetEase URL (`music.163.com/song?id=xxx`): pass the URL to `music_helper.py download` — it resolves the song name first, then downloads via NetEase direct → Bilibili → YouTube.
+   - Bilibili URL (`bilibili.com/video/BV...`, `/list/...?bvid=`, or a `b23.tv` short link): pass the URL as-is — it is routed straight to Bilibili with no search step. The bvid is extracted when present; `b23.tv` short links are handed to yt-dlp, which follows the redirect.
    - Query containing Chinese characters: use auto mode, which prefers Soulseek → Bilibili → YouTube.
    - English or non-Chinese query: use auto mode, which prefers Soulseek → YouTube.
+   - Force `--platform kuwo` or `--platform kugou` when auto mode returns a cover, a live version, or a low-bitrate file — both catalogues rank the studio original first and download straight from the CDN.
 4. Add options requested by the user. If the user wants a fast download without Soulseek, add `--quick`.
 5. Run the command.
 6. Report the saved path, format, fallback tier, and any warning.
@@ -92,11 +102,26 @@ NetEase URL (resolved to song name, then downloaded via Bilibili/YouTube):
 python scripts/music_helper.py download "https://music.163.com/song?id=185809"
 ```
 
+Bilibili URL (bvid extracted, no search step):
+
+```bash
+python scripts/music_helper.py download "https://www.bilibili.com/video/BV1TfN2emEZh"
+python scripts/music_helper.py download "https://www.bilibili.com/list/ml1266054064?oid=1&bvid=BV1TfN2emEZh"
+python scripts/music_helper.py download "https://b23.tv/abcDEF"
+```
+
 Kuwo Music (酷我音乐) — search and download directly:
 
 ```bash
 python scripts/music_helper.py download "周杰伦 稻香" --platform kuwo
 python scripts/music_helper.py search "周杰伦" --platform kuwo
+```
+
+Kugou Music (酷狗音乐) — search and download directly, best source for Chinese lossless:
+
+```bash
+python scripts/music_helper.py download "周杰伦 稻香" --platform kugou --format flac
+python scripts/music_helper.py search "周杰伦" --platform kugou
 ```
 
 Audius — decentralized music streaming (zero auth required):
@@ -167,13 +192,19 @@ Search Soulseek network only (no download):
 python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
 ```
 
+Inspect what a platform actually has before downloading — `search --json` returns one machine-readable line, so you can read the real titles, artists and durations instead of guessing from a formatted list:
+
+```bash
+python scripts/music_helper.py search "周杰伦 稻香" --platform kugou --json
+```
+
 > **Note**: Soulseek requires credentials. Set `SLSK_USERNAME` and `SLSK_PASSWORD` environment variables, or pass `--slsk-user USER --slsk-pass PASS`. Search returns results from all users; download auto-selects the best FLAC from a user with free slots.
 
 ## Options
 
 `music_helper.py download` supports:
 
-- `--platform {auto,bilibili,youtube,ytmusic,kuwo,audius,soulseek}`: default `auto`.
+- `--platform {auto,bilibili,youtube,ytmusic,soulseek,kuwo,kugou,audius}`: default `auto`.
 - `--format {auto,mp3,flac,m4a,opus,wav,vorbis}`: default `auto`. `auto` probes the source codec: flac if lossless (flac/alac/wav/pcm), else mp3 320K — no fake-lossless upcast.
 - `--output PATH`: default platform music folder.
 - `--proxy URL`: for YouTube or Spotify download networking.
@@ -197,6 +228,21 @@ python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
 - `--no-lyrics`: skip lyrics fetching and embedding.
 - `--json`: output machine-readable JSON after the update.
 
+`music_helper.py search "query"` supports:
+
+- `--platform`: same choices as `download`.
+- `--limit N`: number of results (default 5).
+- `--json`: emit one JSON line with `ok`, `platform`, `count` and the raw `results`.
+
+`music_helper.py lyrics-sync "directory"` supports:
+
+- `--overwrite`: re-fetch lyrics for tracks that already have a `.lrc`.
+- `--dry-run`: report what would be written without touching the disk.
+- `--limit N`: stop after N audio files.
+- `--json`: emit one JSON line with `scanned`, `written`, `existing`, `not_found`, `no_title` and `failed` counts.
+
+Tracks whose title cannot be determined — no usable tags and a filename like `01.mp3` — are counted as `no_title` and skipped, because wrong lyrics are worse than none.
+
 ## Platform Behavior
 
 | Input | Primary Path | Notes |
@@ -205,8 +251,10 @@ python scripts/music_helper.py search "X Japan FLAC" --platform soulseek
 | English/non-Chinese query | Soulseek → YouTube | Soulseek first, then YouTube. Use `--quick` to skip Soulseek. Add proxy only after network failure. |
 | Spotify URL | spotDL through `music_helper.py` | May need proxy in restricted regions. For playlist sync use `spotify_helper.py`. |
 | NetEase URL (`music.163.com/song?id=xxx`) | NetEase direct → Bilibili/YouTube | Resolves song name via NetEase API, tries NetEase CDN direct download first (free songs), falls back to Bilibili/YouTube. |
-| Force Kuwo (`--platform kuwo`) | Kuwo API direct | Search and download via Kuwo Music API. Supports lossless FLAC and high-bitrate MP3. No auth required. |
-| Force Audius (`--platform audius`) | Audius decentralized network | Search and stream from Audius P2P network. Zero auth required. Independent artists and remixes. |
+| Bilibili URL (`bilibili.com`, `b23.tv`) | Bilibili direct | No search step, so there is no risk of grabbing the wrong upload. `b23.tv` short links are resolved by yt-dlp. |
+| Force Kuwo (`--platform kuwo`) | Kuwo API direct | Search and download via Kuwo Music API, no auth required. Studio originals rank first. ⚠️ VIP/licensed tracks may resolve to an ~11s preview — the helper detects this, rejects the file and reports it. Retry with `--platform kugou`. |
+| Force Kugou (`--platform kugou`) | Kugou API direct | Best source for Chinese lossless FLAC, no auth required. Studio originals rank first. The CDN certificate does not match its hostnames, so audio is fetched over plain HTTP — the URL itself is signed and single-use. |
+| Force Audius (`--platform audius`) | Audius decentralized network | Search and stream from Audius P2P network. Zero auth required. Independent artists and remixes — mainstream catalogues are usually missing, so prefer Kuwo/Kugou/Bilibili for known songs. |
 | Force YouTube Music (`--platform ytmusic`) | YouTube Music catalog | Search YouTube Music catalog and download via yt-dlp. No cookies needed for search. |
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct download | No search step — yt-dlp downloads the URL directly. YouTube may need proxy/cookies. |
 | Force Soulseek (`--platform soulseek`) | Soulseek P2P network | ⚠️ Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads the best FLAC from the first user with free slots. |
@@ -223,6 +271,9 @@ Execute the first matching row. Do not explain the table to the user — just ru
 | YouTube `Sign in to confirm you're not a bot` | Ask the user to export cookies.txt (e.g. via "Get cookies.txt" browser extension for YouTube), then retry: `download "<query>" --cookies /path/cookies.txt`. |
 | Spotify `KeyError: 'uri'` | Extract the track name from the Spotify URL or ask the user for it, then download by name instead: `download "Artist Song"`. Do not retry the same Spotify URL. |
 | `No results` on any platform | Try: (1) `Artist Title` format, (2) force the other platform via `--platform`, (3) broaden the query. Try up to 2 variants before reporting failure to the user. |
+| `Source returned a preview clip` / `VIP/preview-only` | The platform only licenses a snippet of that track — the file is deleted, nothing was saved. Retry the same query with a different catalogue: `--platform kugou`, then `--platform kuwo`, then auto mode. Do not retry the same platform. |
+| Downloaded file is a cover, live or 伴奏 version | Re-run with `--platform kugou` or `--platform kuwo`, which rank the studio original first. If the original still is not first, run `search "<query>" --platform kugou --json`, pick the right `hash`/`music_id` by artist, and re-download with `--index N`. |
+| `lyrics-sync` reports a high `not_found` count | LRCLIB has no synced lyrics for those tracks. Report the count and the filenames — do not loop. For a specific track you know the real artist/title of, run `meta "<filepath>" --query "Artist - Title"` instead. |
 | Soulseek `no results` | Ensure `SLSK_USERNAME` and `SLSK_PASSWORD` are set. Try a broader query with fewer words. |
 | Soulseek `credentials not set` / `SLSK_USERNAME not set` | Ask the user to provide Soulseek credentials (set env vars `SLSK_USERNAME` and `SLSK_PASSWORD`, or pass `--slsk-user` `--slsk-pass`). If unavailable, retry with `--quick` to skip Soulseek. |
 | Soulseek `download failed` / timeout | The remote user may be offline or have a full queue. Retry the same command — Soulseek picks a different result. |
@@ -242,5 +293,7 @@ After a successful command, tell the user:
 - the output directory or file path printed by the helper,
 - the format,
 - whether fallback, proxy, cookies, metadata cleanup, or lyrics fetching was used.
+
+After `lyrics-sync`, report the scanned/written counts and list the tracks that got `not_found` or `no_title`, so the user knows which ones still need attention.
 
 If the command fails, summarize the real error and the next concrete retry command.

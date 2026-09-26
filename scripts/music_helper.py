@@ -24,6 +24,7 @@ import sys
 import time
 from collections import Counter
 
+import audius_client
 import bili_client
 import kugou_client
 import kuwo_client
@@ -159,6 +160,15 @@ def _emit_json(payload):
     print(json.dumps(payload, ensure_ascii=False))
 
 
+# Platforms whose plan is fully described by their own name: search → resolve →
+# direct HTTP download, with no yt-dlp anywhere in the pipeline.
+_DIRECT_API_ENGINES = {
+    "kuwo": ("kuwo-api-direct", "get_download_url()", "resolve CDN URL"),
+    "kugou": ("kugou-api-direct", "get_download_url()", "resolve CDN URL"),
+    "audius": ("audius-api-direct", "get_stream_url()", "resolve stream URL"),
+}
+
+
 def _download_plan(
     query, platform="auto", fmt="flac", output=None, proxy=None, bitrate=None,
     index=1, embed_thumbnail=True, no_metadata=False, cookies=None,
@@ -266,12 +276,14 @@ def _download_plan(
     selected = auto_select_platform(query) if platform == "auto" else platform
     notes = []
 
-    if selected == "kuwo":
+    if selected in _DIRECT_API_ENGINES:
+        engine, resolve_fn, resolve_step = _DIRECT_API_ENGINES[selected]
+        label = selected.capitalize()
         return {
             "ok": True,
             "dry_run": True,
-            "engine": "kuwo-api-direct",
-            "platform": "kuwo",
+            "engine": engine,
+            "platform": selected,
             "query": query,
             "format": fmt,
             "output": output,
@@ -279,25 +291,8 @@ def _download_plan(
             "index": index,
             "embed_thumbnail": embed_thumbnail,
             "metadata": not no_metadata,
-            "command": f"kuwo_client.search({query!r}) → get_download_url() → urllib download",
-            "notes": ["Kuwo: search → resolve CDN URL → direct download (no yt-dlp)."],
-        }
-
-    if selected == "kugou":
-        return {
-            "ok": True,
-            "dry_run": True,
-            "engine": "kugou-api-direct",
-            "platform": "kugou",
-            "query": query,
-            "format": fmt,
-            "output": output,
-            "proxy": proxy,
-            "index": index,
-            "embed_thumbnail": embed_thumbnail,
-            "metadata": not no_metadata,
-            "command": f"kugou_client.search({query!r}) → get_download_url() → urllib download",
-            "notes": ["Kugou: search → resolve CDN URL → direct download (no yt-dlp)."],
+            "command": f"{selected}_client.search({query!r}) → {resolve_fn} → urllib download",
+            "notes": [f"{label}: search → {resolve_step} → direct download (no yt-dlp)."],
         }
 
     if selected == "bilibili":
@@ -957,6 +952,11 @@ def _version_tag(title):
     return ""
 
 
+# Direct-API catalogues share one result shape (artist/title/duration) and one
+# ranking pass; only the field holding their per-track identifier differs.
+_CATALOG_ID_KEY = {"kuwo": "music_id", "kugou": "hash", "audius": "track_id"}
+
+
 def _print_search_results(platform, results, error=None):
     if not results:
         if platform == "bilibili":
@@ -968,7 +968,7 @@ def _print_search_results(platform, results, error=None):
         elif platform == "soulseek":
             print("No Soulseek results.")
             print("Make sure SLSK_USERNAME and SLSK_PASSWORD are set.")
-        elif platform in ("kuwo", "kugou"):
+        elif platform in _CATALOG_ID_KEY:
             print(f"No {platform.capitalize()} results.")
         else:
             if error:
@@ -1002,8 +1002,8 @@ def _print_search_results(platform, results, error=None):
             print(f"  {name}")
             print(f"     User: {r['username']:20s} | {size_mb:.1f}MB | {r['extension']} {slot_flag}")
             print()
-    elif platform in ("kuwo", "kugou"):
-        id_key = "music_id" if platform == "kuwo" else "hash"
+    elif platform in _CATALOG_ID_KEY:
+        id_key = _CATALOG_ID_KEY[platform]
         for i, r in enumerate(results, 1):
             dur = r.get("duration", 0)
             dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
@@ -1049,6 +1049,8 @@ def cmd_search(query, platform="auto", limit=5, proxy=None, json_output=False):
         results = rank_search_results(kuwo_client.search(query, limit=limit), query)
     elif platform == "kugou":
         results = rank_search_results(kugou_client.search(query, limit=limit), query)
+    elif platform == "audius":
+        results = rank_search_results(audius_client.search(query, limit=limit), query)
     else:
         results, error = _search_youtube(py, query, limit, proxy)
 
@@ -1533,9 +1535,6 @@ def _download_kuwo(
     fetch_lyrics=True,
 ):
     """Kuwo pipeline: search → direct CDN download → metadata."""
-    import urllib.error
-    import urllib.request
-
     print("=" * 60)
     print("  Platform : Kuwo (酷我音乐)")
     print(f"  Query    : {query}")
@@ -1576,79 +1575,12 @@ def _download_kuwo(
                 "error": "Kuwo download URL resolution failed"}
     debug_log(f"kuwo url resolved: {audio_url[:80]}...")
 
-    print("[3/3] Downloading audio...")
-    raw_path = os.path.join(output, f"_kuwo_raw_{music_id}.part")
-
-    req = urllib.request.Request(audio_url)
-    req.add_header("User-Agent", kuwo_client.UA)
-    req.add_header("Referer", "http://www.kuwo.cn/")
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            with open(raw_path, "wb") as f:
-                while True:
-                    chunk = r.read(65536)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-    except Exception as e:
-        print(f"  [!] Kuwo download failed: {e}")
-        if os.path.isfile(raw_path):
-            os.remove(raw_path)
-        return {"ok": False, "platform": "kuwo", "query": query,
-                "error": f"Kuwo download failed: {e}"}
-
-    size_mb = os.path.getsize(raw_path) / (1024 * 1024)
-    if size_mb < 0.1:
-        os.remove(raw_path)
-        print("  [!] Downloaded file too small (<100KB)")
-        return {"ok": False, "platform": "kuwo", "query": query,
-                "error": "Downloaded file too small"}
-    print(f"  Downloaded: {size_mb:.1f} MB")
-
-    ffmpeg_exe = find_ffmpeg(py)
-
-    clip_error = _preview_clip_error(ffmpeg_exe, raw_path, dur)
-    if clip_error:
-        os.remove(raw_path)
-        return {"ok": False, "platform": "kuwo", "query": query, "error": clip_error}
-
-    raw_ext = _sniff_audio_ext(raw_path) or "mp3"
-    debug_log(f"kuwo container sniffed as {raw_ext}")
-
-    actual_fmt = raw_ext if fmt == "auto" else fmt
-
-    song_name = sanitize_filename(f"{artist} - {title}" if artist else title)
-
-    if ffmpeg_exe and actual_fmt != raw_ext:
-        print(f"  Converting to {actual_fmt}...")
-        final_path = os.path.join(output, f"{song_name}.{actual_fmt}")
-        ok = _ffmpeg_convert(ffmpeg_exe, raw_path, final_path, actual_fmt, bitrate)
-        if not ok:
-            return {"ok": False, "platform": "kuwo", "query": query,
-                    "error": "ffmpeg conversion failed"}
-    else:
-        final_path = os.path.join(output, f"{song_name}.{raw_ext}")
-        if raw_path != final_path:
-            if os.path.isfile(final_path):
-                os.remove(final_path)
-            os.rename(raw_path, final_path)
-
-    print(f"  Saved: {os.path.basename(final_path)}")
-
-    if not no_metadata:
-        enhance_metadata(
-            query, f"{artist} - {title}", output,
-            embed_thumbnail=embed_thumbnail, filepath=final_path,
-            fetch_lyrics=fetch_lyrics,
-        )
-
-    print("\n[OK] Download complete!")
-    print(f"     Files saved to: {output}")
-    return {
-        "ok": True, "platform": "kuwo", "engine": "kuwo-api-direct",
-        "query": query, "format": actual_fmt, "output": output,
-        "metadata": not no_metadata,
-    }
+    return _download_and_tag(
+        "kuwo", "kuwo-api-direct", query, output, fmt, bitrate, py,
+        audio_url, f"_kuwo_raw_{music_id}", artist, title, dur,
+        embed_thumbnail, no_metadata, fetch_lyrics,
+        headers={"User-Agent": kuwo_client.UA, "Referer": "http://www.kuwo.cn/"},
+    )
 
 
 def _download_kugou(
@@ -1657,8 +1589,6 @@ def _download_kugou(
     fetch_lyrics=True,
 ):
     """Kugou pipeline: search → direct CDN download → metadata."""
-    import urllib.request
-
     print("=" * 60)
     print("  Platform : Kugou (酷狗音乐)")
     print(f"  Query    : {query}")
@@ -1698,12 +1628,31 @@ def _download_kugou(
                 "error": "Kugou download URL resolution failed"}
     debug_log(f"kugou url resolved: {audio_url[:80]}...")
 
-    print("[3/3] Downloading audio...")
-    raw_path = os.path.join(output, f"_kugou_raw_{song_hash}.part")
+    return _download_and_tag(
+        "kugou", "kugou-api-direct", query, output, fmt, bitrate, py,
+        _plain_http(audio_url), f"_kugou_raw_{song_hash}", artist, title, dur,
+        embed_thumbnail, no_metadata, fetch_lyrics,
+        headers={"User-Agent": kugou_client.UA, "Referer": "https://www.kugou.com/"},
+    )
 
-    req = urllib.request.Request(_plain_http(audio_url))
-    req.add_header("User-Agent", kugou_client.UA)
-    req.add_header("Referer", "https://www.kugou.com/")
+
+def _download_and_tag(platform, engine, query, output, fmt, bitrate, py,
+                      audio_url, raw_stem, artist, title, expected_dur,
+                      embed_thumbnail, no_metadata, fetch_lyrics, headers=None):
+    """Fetch a resolved audio URL, validate it, convert, tag and save.
+
+    Shared by the direct-API pipelines (Kuwo, Kugou, Audius), which differ
+    only in how they search and how they resolve the URL. Returns the result
+    dict; ``ok`` is False when the source handed back something unusable.
+    """
+    import urllib.request
+
+    print("[3/3] Downloading audio...")
+    raw_path = os.path.join(output, f"{raw_stem}.part")
+
+    req = urllib.request.Request(audio_url)
+    for key, value in (headers or {}).items():
+        req.add_header(key, value)
     try:
         with urllib.request.urlopen(req, timeout=180) as r:
             with open(raw_path, "wb") as f:
@@ -1713,40 +1662,40 @@ def _download_kugou(
                         break
                     f.write(chunk)
     except Exception as e:
-        print(f"  [!] Kugou download failed: {e}")
+        print(f"  [!] {platform} download failed: {e}")
         if os.path.isfile(raw_path):
             os.remove(raw_path)
-        return {"ok": False, "platform": "kugou", "query": query,
-                "error": f"Kugou download failed: {e}"}
+        return {"ok": False, "platform": platform, "query": query,
+                "error": f"{platform} download failed: {e}"}
+
+    def _reject(error):
+        if os.path.isfile(raw_path):
+            os.remove(raw_path)
+        return {"ok": False, "platform": platform, "query": query, "error": error}
 
     size_mb = os.path.getsize(raw_path) / (1024 * 1024)
     if size_mb < 0.1:
-        os.remove(raw_path)
         print("  [!] Downloaded file too small (<100KB)")
-        return {"ok": False, "platform": "kugou", "query": query,
-                "error": "Downloaded file too small"}
+        return _reject("Downloaded file too small")
     print(f"  Downloaded: {size_mb:.1f} MB")
 
     ffmpeg_exe = find_ffmpeg(py)
 
-    clip_error = _preview_clip_error(ffmpeg_exe, raw_path, dur)
+    clip_error = _preview_clip_error(ffmpeg_exe, raw_path, expected_dur)
     if clip_error:
-        os.remove(raw_path)
-        return {"ok": False, "platform": "kugou", "query": query, "error": clip_error}
+        return _reject(clip_error)
 
     raw_ext = _sniff_audio_ext(raw_path) or "mp3"
-    debug_log(f"kugou container sniffed as {raw_ext}")
+    debug_log(f"{platform} container sniffed as {raw_ext}")
 
     actual_fmt = raw_ext if fmt == "auto" else fmt
-
     song_name = sanitize_filename(f"{artist} - {title}" if artist else title)
 
     if ffmpeg_exe and actual_fmt != raw_ext:
         print(f"  Converting to {actual_fmt}...")
         final_path = os.path.join(output, f"{song_name}.{actual_fmt}")
-        ok = _ffmpeg_convert(ffmpeg_exe, raw_path, final_path, actual_fmt, bitrate)
-        if not ok:
-            return {"ok": False, "platform": "kugou", "query": query,
+        if not _ffmpeg_convert(ffmpeg_exe, raw_path, final_path, actual_fmt, bitrate):
+            return {"ok": False, "platform": platform, "query": query,
                     "error": "ffmpeg conversion failed"}
     else:
         final_path = os.path.join(output, f"{song_name}.{raw_ext}")
@@ -1767,10 +1716,58 @@ def _download_kugou(
     print("\n[OK] Download complete!")
     print(f"     Files saved to: {output}")
     return {
-        "ok": True, "platform": "kugou", "engine": "kugou-api-direct",
+        "ok": True, "platform": platform, "engine": engine,
         "query": query, "format": actual_fmt, "output": output,
         "metadata": not no_metadata,
     }
+
+
+def _download_audius(
+    py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
+    no_metadata, cookies, before, slsk_user, slsk_pass, quick,
+    fetch_lyrics=True,
+):
+    """Audius pipeline: search → stream URL → metadata."""
+    print("=" * 60)
+    print("  Platform : Audius")
+    print(f"  Query    : {query}")
+    print(f"  Format   : {fmt}")
+    print(f"  Output   : {output}")
+    print("=" * 60)
+    print()
+
+    print("[1/3] Searching Audius...")
+    results = audius_client.search(query, limit=max(index, 5))
+    if not results:
+        print("\n  Audius search returned no results.")
+        return {"ok": False, "platform": "audius", "query": query,
+                "error": "Audius search returned no results"}
+
+    results = rank_search_results(results, query)
+    item = results[min(index - 1, len(results) - 1)]
+    track_id = item["track_id"]
+    title = item["title"]
+    artist = item["artist"]
+    dur = item.get("duration", 0)
+    dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
+    print(f"  Found: {artist} - {title}  [{dur_str}]")
+    print(f"  track_id: {track_id}")
+    print()
+
+    print("[2/3] Resolving stream URL...")
+    audio_url = audius_client.get_stream_url(track_id)
+    if not audio_url:
+        print("  Failed to resolve stream URL.")
+        return {"ok": False, "platform": "audius", "query": query,
+                "error": "Audius stream URL resolution failed"}
+    debug_log(f"audius url resolved: {audio_url[:80]}...")
+
+    return _download_and_tag(
+        "audius", "audius-api-direct", query, output, fmt, bitrate, py,
+        audio_url, f"_audius_raw_{track_id}", artist, title, dur,
+        embed_thumbnail, no_metadata, fetch_lyrics,
+        headers={"User-Agent": audius_client.UA},
+    )
 
 
 # ── Platform dispatch table ──────────────────────────────────────────────
@@ -1780,6 +1777,7 @@ _PLATFORM_HANDLERS = {
     "youtube": _download_youtube,
     "kuwo": _download_kuwo,
     "kugou": _download_kugou,
+    "audius": _download_audius,
     "ytmusic": "ytmusic",   # handled inline (has its own before_snapshot)
     "soulseek": "soulseek",  # handled inline (no fallback)
 }
@@ -2426,7 +2424,7 @@ Examples:
 
     p_search = sub.add_parser("search", help="Search for songs (no download)")
     p_search.add_argument("query", help="Search query")
-    p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek", "kuwo", "kugou"])
+    p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek", "kuwo", "kugou", "audius"])
     p_search.add_argument("--limit", type=int, default=5)
     p_search.add_argument("--proxy", default=None)
     p_search.add_argument("--json", action="store_true",
@@ -2459,7 +2457,7 @@ Examples:
 
     p_dl = sub.add_parser("download", help="Download a song")
     p_dl.add_argument("query", help="Song name, artist, Spotify URL, or search query")
-    p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek", "kuwo", "kugou"])
+    p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek", "kuwo", "kugou", "audius"])
     p_dl.add_argument("--format", default="auto",
                       choices=["auto", "mp3", "flac", "m4a", "opus", "wav", "vorbis"],
                       help="Output format. 'auto' probes the source: flac if lossless, else mp3 320K")
