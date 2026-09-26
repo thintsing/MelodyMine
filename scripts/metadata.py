@@ -191,10 +191,10 @@ def rank_bili_results(results):
 _PROSE_TITLE_SLACK = 8
 
 
-def rank_kuwo_results(results, query=None):
-    """Reorder Kuwo results so the original studio recording comes first.
+def rank_search_results(results, query=None):
+    """Reorder CJK catalogue results so the original recording comes first.
 
-    Kuwo's API order is popularity-weighted, which puts cover channels, live
+    Kuwo and Kugou both rank by popularity, which puts cover channels, live
     cuts and video-style uploads above the original. Score each result by how
     well it matches the query, then demote accompaniments, derivative versions
     and prose titles. Ties keep their API order.

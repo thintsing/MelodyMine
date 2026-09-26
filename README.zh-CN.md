@@ -230,7 +230,6 @@ MelodyMine/
 │   ├── kuwo_client.py         # 酷我音乐搜索 + CDN 下载（仅标准库）
 │   ├── audius_client.py       # Audius Web3 音乐搜索 + 串流（仅标准库）
 │   ├── kugou_client.py        # 酷狗音乐搜索 + 下载（仅标准库）
-│   ├── migu_client.py         # 咪咕音乐搜索 + 下载（仅标准库）
 │   ├── netease_client.py      # 网易云音乐 API（仅标准库）
 │   ├── ytmusic_client.py      # YouTube Music API 搜索（ytmusicapi）
 │   ├── soulseek_client.py     # Soulseek P2P 搜索/下载（aioslsk）

@@ -57,7 +57,7 @@ from metadata import (  # noqa: E402
     parse_bili_title,
     parse_search_query,
     rank_bili_results,
-    rank_kuwo_results,
+    rank_search_results,
 )
 from metadata import (
     list_audio_files as _list_audio_files,
@@ -65,7 +65,9 @@ from metadata import (
 from music_helper import (  # noqa: E402
     _auto_fmt_from_codec,
     _download_plan,
+    _plain_http,
     _resolve_auto_fmt,
+    _sniff_audio_ext,
     cmd_download,
 )
 
@@ -211,8 +213,8 @@ class TestTextSim(unittest.TestCase):
         self.assertEqual(text_sim(None, "x"), 0.0)
 
 
-class TestRankKuwoResults(unittest.TestCase):
-    """rank_kuwo_results: originals first, accompaniment/cover/live demoted."""
+class TestRankSearchResults(unittest.TestCase):
+    """rank_search_results: originals first, accompaniment/cover/live demoted."""
 
     @staticmethod
     def _item(title, artist="Artist"):
@@ -220,7 +222,7 @@ class TestRankKuwoResults(unittest.TestCase):
 
     def test_accompaniment_demoted_below_vocal(self):
         results = [self._item("\u9ed8 (\u4f34\u594f)"), self._item("\u9ed8")]  # 默 (伴奏), 默
-        self.assertEqual(rank_kuwo_results(results, "\u5f20\u6770 \u9ed8")[0]["title"], "\u9ed8")
+        self.assertEqual(rank_search_results(results, "\u5f20\u6770 \u9ed8")[0]["title"], "\u9ed8")
 
     def test_cover_and_live_demoted(self):
         results = [
@@ -228,21 +230,21 @@ class TestRankKuwoResults(unittest.TestCase):
             self._item("\u9ed8 (\u7ffb\u5531)"),  # 默 (翻唱)
             self._item("\u9ed8"),
         ]
-        ranked = rank_kuwo_results(results, "\u5f20\u6770 \u9ed8")
+        ranked = rank_search_results(results, "\u5f20\u6770 \u9ed8")
         self.assertEqual(ranked[0]["title"], "\u9ed8")
         self.assertEqual({r["title"] for r in ranked[1:]}, {"\u9ed8 (Live)", "\u9ed8 (\u7ffb\u5531)"})
 
     def test_version_tag_on_right_song_still_matches(self):
         # A live cut of the right song must not be dropped, only ranked lower.
         results = [self._item("\u9ed8 (Live)")]
-        self.assertEqual(len(rank_kuwo_results(results, "\u5f20\u6770 \u9ed8")), 1)
+        self.assertEqual(len(rank_search_results(results, "\u5f20\u6770 \u9ed8")), 1)
 
     def test_no_query_keeps_all_results(self):
         results = [self._item("\u9ed8 (\u4f34\u594f)"), self._item("\u9ed8")]
-        self.assertEqual(len(rank_kuwo_results(results, None)), 2)
+        self.assertEqual(len(rank_search_results(results, None)), 2)
 
     def test_empty_results(self):
-        self.assertEqual(rank_kuwo_results([], "\u9ed8"), [])
+        self.assertEqual(rank_search_results([], "\u9ed8"), [])
 
 
 class TestAutoSelectPlatform(unittest.TestCase):
@@ -1125,6 +1127,108 @@ class TestBilibiliUrlRouting(unittest.TestCase):
                 cmd_download(self.URL, platform="kuwo", output=tmp)
         self.assertFalse(mock_bili.called)
         self.assertTrue(mock_kuwo.called)
+
+
+class TestPlainHttp(unittest.TestCase):
+    """_plain_http: Kugou's CDN cert does not cover the download host."""
+
+    def test_downgrades_https(self):
+        self.assertEqual(
+            _plain_http("https://fs.kugou.com/a.flac?k=1"),
+            "http://fs.kugou.com/a.flac?k=1",
+        )
+
+    def test_leaves_http_alone(self):
+        self.assertEqual(_plain_http("http://fs.kugou.com/a.flac"), "http://fs.kugou.com/a.flac")
+
+    def test_only_first_scheme_replaced(self):
+        # A signed URL may carry another URL in its query string.
+        self.assertEqual(
+            _plain_http("https://a.com/?u=https://b.com"),
+            "http://a.com/?u=https://b.com",
+        )
+
+    def test_none_passthrough(self):
+        self.assertIsNone(_plain_http(None))
+
+
+class TestSniffAudioExt(unittest.TestCase):
+    """_sniff_audio_ext: the container cannot be inferred from the request."""
+
+    def _write(self, data):
+        f = tempfile.NamedTemporaryFile(delete=False, suffix=".part")
+        f.write(data)
+        f.close()
+        self.addCleanup(os.unlink, f.name)
+        return f.name
+
+    def test_flac(self):
+        self.assertEqual(_sniff_audio_ext(self._write(b"fLaC\x00\x00\x00")), "flac")
+
+    def test_id3_mp3(self):
+        self.assertEqual(_sniff_audio_ext(self._write(b"ID3\x04\x00\x00\x00")), "mp3")
+
+    def test_frame_sync_mp3(self):
+        self.assertEqual(_sniff_audio_ext(self._write(b"\xff\xfb\x90\x00")), "mp3")
+
+    def test_ogg(self):
+        self.assertEqual(_sniff_audio_ext(self._write(b"OggS\x00\x02")), "ogg")
+
+    def test_m4a_ftyp_at_offset_four(self):
+        self.assertEqual(_sniff_audio_ext(self._write(b"\x00\x00\x00\x20ftypM4A ")), "m4a")
+
+    def test_unknown_bytes(self):
+        self.assertIsNone(_sniff_audio_ext(self._write(b"<html>nope</html>")))
+
+    def test_missing_file(self):
+        self.assertIsNone(_sniff_audio_ext(os.path.join(tempfile.gettempdir(), "nope.part")))
+
+
+class TestDownloadPlanKugou(unittest.TestCase):
+    """_download_plan: --platform kugou uses the API path, not yt-dlp."""
+
+    def test_engine_and_platform(self):
+        plan = _download_plan("周杰伦 稻香", platform="kugou")
+        self.assertEqual(plan["platform"], "kugou")
+        self.assertEqual(plan["engine"], "kugou-api-direct")
+
+    def test_command_names_the_client(self):
+        self.assertIn("kugou_client.search", _download_plan("稻香", platform="kugou")["command"])
+
+
+class TestDownloadKugou(unittest.TestCase):
+    """_download_kugou failure paths (no network)."""
+
+    @staticmethod
+    def _call(results, url="http://fs.kugou.com/a.flac"):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("music_helper.kugou_client.search", return_value=results), \
+                 patch("music_helper.kugou_client.get_download_url", return_value=url), \
+                 patch("urllib.request.urlopen") as mock_open:
+                mock_open.side_effect = Exception("network down")
+                return music_helper._download_kugou(
+                    "python", "稻香", tmp, "flac", None, None, 1, False,
+                    True, None, [], None, None, False,
+                )
+
+    RESULT = {"title": "稻香", "artist": "周杰伦", "album": "魔杰座",
+              "hash": "8909E1809908CD8E3BF6CF85D98B93F0", "duration": 223}
+
+    def test_no_search_results(self):
+        out = self._call([])
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["platform"], "kugou")
+        self.assertIn("no results", out["error"])
+
+    def test_unresolvable_download_url(self):
+        out = self._call([self.RESULT], url=None)
+        self.assertFalse(out["ok"])
+        self.assertIn("URL resolution failed", out["error"])
+
+    def test_network_error_reported(self):
+        out = self._call([self.RESULT])
+        self.assertFalse(out["ok"])
+        self.assertIn("network down", out["error"])
 
 
 if __name__ == "__main__":

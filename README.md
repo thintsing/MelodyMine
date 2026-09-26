@@ -230,7 +230,6 @@ MelodyMine/
 │   ├── kuwo_client.py         # Kuwo Music search + CDN download URL (stdlib only)
 │   ├── audius_client.py       # Audius Web3 music search + stream (stdlib only)
 │   ├── kugou_client.py        # Kugou Music search + download (stdlib only)
-│   ├── migu_client.py         # Migu Music search + download (stdlib only)
 │   ├── netease_client.py      # NetEase Cloud Music API (stdlib only)
 │   ├── ytmusic_client.py      # YouTube Music API search (ytmusicapi)
 │   ├── soulseek_client.py     # Soulseek P2P search/download (aioslsk)
