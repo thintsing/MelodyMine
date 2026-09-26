@@ -27,6 +27,7 @@ from collections import Counter
 import bili_client
 import kugou_client
 import kuwo_client
+import lyrics_client
 import metadata as _metadata_mod
 import netease_client
 import soulseek_client
@@ -1109,6 +1110,134 @@ def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False,
         "query": query,
     }
     if json_output:
+        _emit_json(result)
+    return result
+
+
+# ── Library lyrics sync ──────────────────────────────────────────────────
+
+def _iter_audio_files(root):
+    """Yield every audio file under ``root``, recursively, in stable order."""
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in sorted(filenames):
+            if os.path.splitext(name)[1].lower() in _AUDIO_EXTS:
+                yield os.path.join(dirpath, name)
+
+
+def _lyrics_target(artist, title, filepath):
+    """Resolve the artist/title to search for, from tags or the filename.
+
+    Tags win because a file named ``01 Track.flac`` says nothing, while a
+    filename wins over missing tags. Returns ``(artist, title)``; title is
+    None when neither source produced one.
+    """
+    if not title:
+        derived = derive_query_from_filename(filepath)
+        if derived:
+            artist, title = parse_search_query(derived)
+    # "01.mp3" derives to the title "01"; searching for that returns some
+    # unrelated song, and wrong lyrics are worse than none.
+    if title and title.strip().isdigit():
+        title = None
+    return artist, title
+
+
+def cmd_lyrics_sync(directory, overwrite=False, dry_run=False, json_output=False,
+                    limit=None):
+    """Write a sibling ``.lrc`` for every audio file under ``directory``.
+
+    The audio files are only ever read (ffmpeg tag lookup) — the sole file
+    this creates is ``<same basename>.lrc`` next to each track, which is what
+    Plex and most players pick up. Existing lyrics are left alone unless
+    ``overwrite`` is set.
+    """
+    if not os.path.isdir(directory):
+        print(f"ERROR: Not a directory: {directory}")
+        return {"ok": False, "operation": "lyrics-sync", "directory": directory,
+                "error": "Not a directory"}
+
+    if not find_ffmpeg(sys.executable):
+        print("ERROR: ffmpeg not found — cannot read audio tags.")
+        print("  Run 'python scripts/music_helper.py setup' first.")
+        return {"ok": False, "operation": "lyrics-sync", "directory": directory,
+                "error": "ffmpeg not found"}
+
+    files = list(_iter_audio_files(directory))
+    if limit:
+        files = files[:limit]
+
+    print("=" * 60)
+    print("  MelodyMine — lyrics sync")
+    print("=" * 60)
+    print(f"  Directory: {directory}")
+    print(f"  Audio    : {len(files)} file(s)")
+    print(f"  Mode     : {'dry-run' if dry_run else 'write'}"
+          f"{' (overwrite existing)' if overwrite else ''}")
+    print()
+
+    stats = {"scanned": len(files), "written": 0, "existing": 0,
+             "not_found": 0, "no_title": 0, "failed": 0}
+    written = []
+
+    for i, path in enumerate(files, 1):
+        lrc_path = os.path.splitext(path)[0] + ".lrc"
+        name = os.path.basename(path)
+
+        if os.path.isfile(lrc_path) and not overwrite:
+            stats["existing"] += 1
+            continue
+
+        artist, title = _read_audio_tags(path, python=sys.executable)
+        artist, title = _lyrics_target(artist, title, path)
+        if not title:
+            stats["no_title"] += 1
+            print(f"  [{i}/{len(files)}] {name} — no title in tags or filename, skipped")
+            continue
+
+        try:
+            data = lyrics_client.get_lyrics(artist, title) or {}
+        except Exception as e:
+            stats["failed"] += 1
+            print(f"  [{i}/{len(files)}] {name} — lookup failed: {e}")
+            continue
+
+        synced = data.get("synced_lyrics") or ""
+        plain = data.get("plain_lyrics") or ""
+        if not (synced or plain):
+            stats["not_found"] += 1
+            print(f"  [{i}/{len(files)}] {artist or '?'} - {title} — no lyrics found")
+            continue
+
+        if dry_run:
+            stats["written"] += 1
+            written.append(lrc_path)
+            print(f"  [{i}/{len(files)}] {name} — would write .lrc"
+                  f"{' (synced)' if synced else ' (plain)'}")
+            continue
+
+        saved = lyrics_client.save_lrc(path, synced, plain)
+        if saved:
+            stats["written"] += 1
+            written.append(saved)
+            print(f"  [{i}/{len(files)}] {name} — .lrc written"
+                  f"{' (synced)' if synced else ' (plain)'}")
+        else:
+            stats["failed"] += 1
+            print(f"  [{i}/{len(files)}] {name} — could not write .lrc")
+
+    print()
+    print(f"  Lyrics written : {stats['written']}")
+    print(f"  Already present: {stats['existing']}")
+    print(f"  Not found      : {stats['not_found']}")
+    if stats["no_title"]:
+        print(f"  No title       : {stats['no_title']}")
+    if stats["failed"]:
+        print(f"  Failed         : {stats['failed']}")
+
+    result = {"ok": stats["failed"] == 0, "operation": "lyrics-sync",
+              "directory": os.path.abspath(directory), **stats}
+    if json_output:
+        result["files"] = written
         _emit_json(result)
     return result
 
@@ -2263,6 +2392,20 @@ Examples:
     p_meta.add_argument("--json", action="store_true",
                         help="Output machine-readable JSON after update")
 
+    p_ls = sub.add_parser(
+        "lyrics-sync",
+        help="Write a matching .lrc next to every audio file in a directory",
+    )
+    p_ls.add_argument("directory", help="Library directory to scan (recursive)")
+    p_ls.add_argument("--overwrite", action="store_true",
+                      help="Re-fetch lyrics even when a .lrc already exists")
+    p_ls.add_argument("--dry-run", action="store_true",
+                      help="Report what would be written without touching the disk")
+    p_ls.add_argument("--limit", type=int, default=None,
+                      help="Stop after N audio files (useful for a test pass)")
+    p_ls.add_argument("--json", action="store_true",
+                      help="Output machine-readable JSON instead of the progress log")
+
     p_dl = sub.add_parser("download", help="Download a song")
     p_dl.add_argument("query", help="Song name, artist, Spotify URL, or search query")
     p_dl.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek", "kuwo", "kugou"])
@@ -2309,6 +2452,15 @@ Examples:
             json_output=args.json,
             fetch_lyrics=not args.no_lyrics,
         )
+    elif args.operation == "lyrics-sync":
+        result = cmd_lyrics_sync(
+            args.directory,
+            overwrite=args.overwrite,
+            dry_run=args.dry_run,
+            json_output=args.json,
+            limit=args.limit,
+        )
+        sys.exit(0 if result.get("ok") else 1)
     elif args.operation == "download":
         result = cmd_download(
             args.query,

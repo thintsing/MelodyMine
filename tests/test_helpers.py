@@ -12,6 +12,7 @@ auto_select_platform, is_spotify_url, sanitize_filename, is_chinese.
 
 import io
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -22,6 +23,7 @@ from unittest.mock import MagicMock, patch
 _SCRIPTS = os.path.join(os.path.dirname(__file__), "..", "scripts")
 sys.path.insert(0, os.path.abspath(_SCRIPTS))
 
+import metadata  # noqa: E402  (for patching find_ffmpeg / subprocess.run)
 import music_helper  # noqa: E402  (for patching _PLATFORM_HANDLERS)
 from melodymine_common import (  # noqa: E402
     auto_select_platform,
@@ -1229,6 +1231,157 @@ class TestDownloadKugou(unittest.TestCase):
         out = self._call([self.RESULT])
         self.assertFalse(out["ok"])
         self.assertIn("network down", out["error"])
+
+
+class TestReadAudioTags(unittest.TestCase):
+    """read_audio_tags: parse `ffmpeg -f ffmetadata` output."""
+
+    FFMETA = ";FFMETADATA1\nalbum=爱情宣言\ntitle=原来的我\nartist=齐秦\nencoder=Lavf61\n"
+
+    def _run(self, stdout, returncode=0, ffmpeg="ffmpeg"):
+        with patch("metadata.find_ffmpeg", return_value=ffmpeg), \
+             patch("metadata.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=stdout, returncode=returncode)
+            return metadata.read_audio_tags("song.mp3", python="py")
+
+    def test_reads_artist_and_title(self):
+        self.assertEqual(self._run(self.FFMETA), ("齐秦", "原来的我"))
+
+    def test_skips_header_and_unknown_keys(self):
+        self.assertEqual(self._run(";FFMETADATA1\ntitle=稻香\n"), (None, "稻香"))
+
+    def test_first_value_wins_on_duplicate_keys(self):
+        out = ";FFMETADATA1\nartist=齐秦\nartist=Someone Else\ntitle=原来的我\n"
+        self.assertEqual(self._run(out)[0], "齐秦")
+
+    def test_empty_value_is_none(self):
+        self.assertEqual(self._run(";FFMETADATA1\nartist=\ntitle=\n"), (None, None))
+
+    def test_no_ffmpeg(self):
+        self.assertEqual(self._run(self.FFMETA, ffmpeg=None), (None, None))
+
+    def test_nonzero_exit(self):
+        self.assertEqual(self._run("", returncode=1), (None, None))
+
+    def test_subprocess_exception_does_not_raise(self):
+        with patch("metadata.find_ffmpeg", return_value="ffmpeg"), \
+             patch("metadata.subprocess.run", side_effect=OSError("boom")):
+            self.assertEqual(metadata.read_audio_tags("song.mp3"), (None, None))
+
+
+class TestIterAudioFiles(unittest.TestCase):
+    """_iter_audio_files: recursive, audio only, stable order."""
+
+    def test_finds_nested_audio_and_ignores_lrc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sub = os.path.join(tmp, "Album")
+            os.makedirs(sub)
+            for name in (os.path.join(tmp, "b.flac"), os.path.join(tmp, "a.mp3"),
+                         os.path.join(tmp, "a.lrc"), os.path.join(tmp, "cover.jpg"),
+                         os.path.join(sub, "c.m4a")):
+                with open(name, "wb") as f:
+                    f.write(b"x")
+            found = [os.path.basename(p) for p in music_helper._iter_audio_files(tmp)]
+        self.assertEqual(found, ["a.mp3", "b.flac", "c.m4a"])
+
+    def test_empty_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(list(music_helper._iter_audio_files(tmp)), [])
+
+
+class TestLyricsTarget(unittest.TestCase):
+    """_lyrics_target: tags win, filename is the fallback."""
+
+    def test_tags_used_as_is(self):
+        self.assertEqual(
+            music_helper._lyrics_target("齐秦", "原来的我", "01 Untagged.mp3"),
+            ("齐秦", "原来的我"),
+        )
+
+    def test_filename_fills_missing_title(self):
+        self.assertEqual(
+            music_helper._lyrics_target(None, None, "王杰 - 一场游戏一场梦.mp3"),
+            ("王杰", "一场游戏一场梦"),
+        )
+
+    def test_artist_only_still_falls_back(self):
+        artist, title = music_helper._lyrics_target("王杰", None, "王杰 - 一场游戏一场梦.mp3")
+        self.assertEqual(title, "一场游戏一场梦")
+
+    def test_unusable_filename(self):
+        self.assertEqual(music_helper._lyrics_target(None, None, "01.mp3"), (None, None))
+
+
+class TestCmdLyricsSync(unittest.TestCase):
+    """cmd_lyrics_sync: writes only sibling .lrc files, never touches audio."""
+
+    LYRICS = {"synced_lyrics": "[00:01.00]line", "plain_lyrics": "line"}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.song = os.path.join(self.tmp, "王杰 - 一场游戏一场梦.mp3")
+        with open(self.song, "wb") as f:
+            f.write(b"audio-bytes")
+        patches = [
+            patch("music_helper.find_ffmpeg", return_value="ffmpeg"),
+            patch("music_helper._read_audio_tags", return_value=("王杰", "一场游戏一场梦")),
+            patch("music_helper.lyrics_client.get_lyrics", return_value=self.LYRICS),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _lrc(self):
+        return os.path.splitext(self.song)[0] + ".lrc"
+
+    def test_writes_matching_lrc_and_leaves_audio_alone(self):
+        result = music_helper.cmd_lyrics_sync(self.tmp)
+        self.assertEqual(result["written"], 1)
+        self.assertTrue(os.path.isfile(self._lrc()))
+        self.assertEqual(os.path.basename(self._lrc()), "王杰 - 一场游戏一场梦.lrc")
+        with open(self.song, "rb") as f:
+            self.assertEqual(f.read(), b"audio-bytes")
+
+    def test_second_run_is_a_no_op(self):
+        music_helper.cmd_lyrics_sync(self.tmp)
+        result = music_helper.cmd_lyrics_sync(self.tmp)
+        self.assertEqual(result["written"], 0)
+        self.assertEqual(result["existing"], 1)
+
+    def test_overwrite_refetches(self):
+        music_helper.cmd_lyrics_sync(self.tmp)
+        result = music_helper.cmd_lyrics_sync(self.tmp, overwrite=True)
+        self.assertEqual(result["written"], 1)
+
+    def test_dry_run_writes_nothing(self):
+        result = music_helper.cmd_lyrics_sync(self.tmp, dry_run=True)
+        self.assertEqual(result["written"], 1)
+        self.assertFalse(os.path.exists(self._lrc()))
+
+    def test_no_lyrics_found_is_reported(self):
+        with patch("music_helper.lyrics_client.get_lyrics", return_value=None):
+            result = music_helper.cmd_lyrics_sync(self.tmp)
+        self.assertEqual(result["not_found"], 1)
+        self.assertFalse(os.path.exists(self._lrc()))
+
+    def test_untitled_file_is_skipped(self):
+        with patch("music_helper._read_audio_tags", return_value=(None, None)), \
+             patch("music_helper.derive_query_from_filename", return_value=""):
+            result = music_helper.cmd_lyrics_sync(self.tmp)
+        self.assertEqual(result["no_title"], 1)
+
+    def test_missing_directory(self):
+        result = music_helper.cmd_lyrics_sync(os.path.join(self.tmp, "nope"))
+        self.assertFalse(result["ok"])
+        self.assertIn("Not a directory", result["error"])
+
+    def test_limit_caps_the_scan(self):
+        for i in range(3):
+            with open(os.path.join(self.tmp, f"extra{i}.flac"), "wb") as f:
+                f.write(b"x")
+        result = music_helper.cmd_lyrics_sync(self.tmp, limit=2)
+        self.assertEqual(result["scanned"], 2)
 
 
 if __name__ == "__main__":

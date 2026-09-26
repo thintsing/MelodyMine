@@ -229,51 +229,40 @@ def rank_search_results(results, query=None):
 
 # ─── Audio tag I/O ─────────────────────────────────────────────────────
 
-def read_audio_tags(filepath):
-    """Read artist and title tags from an audio file via ffprobe.
+def read_audio_tags(filepath, python=None):
+    """Read artist and title tags from an audio file via ffmpeg.
 
     Returns (artist, title) tuple. Each is None if missing or unreadable.
     Never raises — returns (None, None) on any failure.
+
+    Uses ``ffmpeg -f ffmetadata`` rather than ffprobe: the bundled
+    imageio-ffmpeg build ships ffmpeg only, so an ffprobe-based reader
+    silently found nothing on machines without a system install.
     """
-    ffmpeg_exe = find_ffmpeg()
+    ffmpeg_exe = find_ffmpeg(python)
     if not ffmpeg_exe:
         return None, None
-    ffprobe_exe = os.path.join(os.path.dirname(ffmpeg_exe), "ffprobe")
-    if os.name == "nt":
-        ffprobe_exe += ".exe"
-    if not os.path.isfile(ffprobe_exe):
-        ffprobe_exe = "ffprobe"
 
     try:
         result = subprocess.run(
-            [
-                ffprobe_exe, "-v", "error",
-                "-show_entries", "format_tags=artist,title,ARTIST,TITLE",
-                "-of", "csv=p=0",
-                filepath,
-            ],
-            capture_output=True, text=True, timeout=10,
+            [ffmpeg_exe, "-v", "quiet", "-i", filepath, "-f", "ffmetadata", "-"],
+            capture_output=True, text=True, timeout=15,
             encoding="utf-8", errors="replace",
         )
-        if result.returncode != 0 or not result.stdout.strip():
-            return None, None
-
-        fields = result.stdout.strip().split(",")
-        artist = title = None
-        if len(fields) >= 4:
-            artist = fields[2] or fields[0] or None
-            title = fields[3] or fields[1] or None
-        elif len(fields) >= 2:
-            artist = fields[0] or None
-            title = fields[1] or None
-        else:
-            return None, None
-
-        artist = artist.strip() if artist else None
-        title = title.strip() if title else None
-        return artist, title
     except Exception:
         return None, None
+
+    if result.returncode != 0:
+        return None, None
+
+    tags = {}
+    for line in result.stdout.splitlines():
+        if line.startswith(";") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        tags.setdefault(key.strip().lower(), value.strip())
+
+    return tags.get("artist") or None, tags.get("title") or None
 
 
 def set_metadata(filepath, title=None, artist=None, album=None, cover_path=None):
