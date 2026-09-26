@@ -17,6 +17,7 @@ Importing this module keeps both helpers in sync and avoids divergent
 venv paths or duplicated dependency-install logic.
 """
 
+import difflib
 import glob
 import os
 import re
@@ -602,11 +603,26 @@ def proxy_to_env(proxy_url):
     return {"HTTP_PROXY": proxy_url, "HTTPS_PROXY": proxy_url}
 
 
-# ─── Title classification ────────────────────────────────────────────────
-# Search APIs return every version of a song that exists — backing tracks,
-# live cuts, DJ edits, 30-second clips, covers. Ranking and lyric matching
-# both need to tell them apart, so the patterns live here rather than being
-# duplicated per caller.
+# ─── Text normalization & title classification ───────────────────────────
+# Music APIs disagree about everything that isn't the audio: traditional vs
+# simplified Chinese, punctuation, spacing, letter case, version suffixes.
+# Comparing two titles means normalizing both first. Search ranking and lyric
+# matching need the same signals, so they live here rather than per caller.
+
+# Only the characters that actually show up in artist/title mismatches.
+_CHINESE_NORM_MAP = str.maketrans({
+    '倫': '伦', '傑': '杰', '樂': '乐', '國': '国', '雲': '云',
+    '會': '会', '個': '个', '時': '时', '間': '间', '說': '说',
+    '話': '话', '愛': '爱', '點': '点', '萬': '万', '龍': '龙',
+    '聲': '声', '體': '体', '學': '学', '問': '问', '車': '车',
+    '門': '门', '開': '开', '關': '关', '風': '风', '飛': '飞',
+    '馬': '马', '魚': '鱼', '鳥': '鸟', '與': '与', '從': '从',
+    '來': '来', '東': '东', '發': '发', '電': '电', '燈': '灯',
+    '當': '当', '後': '后', '書': '书', '長': '长', '見': '见',
+    '貝': '贝', '麵': '面',
+})
+
+_PUNCT_RE = re.compile(r"[\s()\[\]{}（）【】《》〈〉·・、,，.。\-_/\\'\"’“”!！?？:：;；&+*]")
 
 _ACCOMPANIMENT_RE = re.compile(
     r"伴奏|纯音乐|卡拉OK|卡拉ok|karaoke|instrumental|backing\s*track|"
@@ -620,13 +636,26 @@ _ACCOMPANIMENT_RE = re.compile(
 _DERIVATIVE_RE = re.compile(
     r"翻唱|翻自|cover|现场|live|演唱会|巡演|remix|混音|dj版|慢摇|"
     r"加速|减速|sped\s*up|slowed|reverb|片段|剪辑|串烧|medley|"
-    r"\d+\s*秒|改编|致敬|tribute",
+    r"\d+\s*秒|改编|致敬|tribute|中文版|粤语版|国语版|方言版|"
+    r"烟嗓|童声版|女声版|男声版",
     re.IGNORECASE,
 )
 
 # A trailing version tag is not part of a song's identity:
 # "默 (Live)" and "默" are the same song.
 _VERSION_TAG_RE = re.compile(r"\s*[\(（【\[][^()（）【】\[\]]*[\)）】\]]\s*$")
+
+
+def norm_cn(s):
+    """Map traditional Chinese characters to simplified for matching."""
+    return s.translate(_CHINESE_NORM_MAP) if s else s
+
+
+def text_sim(a, b):
+    """Similarity of two titles/artists, ignoring script and punctuation."""
+    na = _PUNCT_RE.sub("", norm_cn(a or "")).lower()
+    nb = _PUNCT_RE.sub("", norm_cn(b or "")).lower()
+    return difflib.SequenceMatcher(None, na, nb).ratio()
 
 
 def is_accompaniment(title):

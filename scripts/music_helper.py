@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import Counter
 
 import bili_client
 import kuwo_client
@@ -47,6 +48,7 @@ from melodymine_common import (
     is_accompaniment,
     is_bandcamp_url,
     is_bilibili_url,
+    is_derivative,
     is_direct_download_url,
     is_netease_url,
     is_soundcloud_url,
@@ -343,6 +345,7 @@ def _print_plan(plan):
 parse_search_query = _metadata_mod.parse_search_query
 parse_bili_title = _metadata_mod.parse_bili_title
 rank_bili_results = _metadata_mod.rank_bili_results
+rank_kuwo_results = _metadata_mod.rank_kuwo_results
 _clean_artist = _metadata_mod._clean_artist
 
 def resolve_netease_url(url):
@@ -891,8 +894,116 @@ def _check_api_health(python):
             print(f"    [FAIL] {name:12s} timed out (>12s)")
 
 
-def cmd_search(query, platform="auto", limit=5, proxy=None):
-    """Search for songs and print results."""
+def _search_youtube(py, query, limit, proxy=None):
+    """Flat-playlist YouTube search via yt-dlp. Returns (results, error)."""
+    cmd = [
+        py, "-m", "yt_dlp",
+        f"ytsearch:{query}",
+        "--flat-playlist",
+        "--print", "%(id)s\t%(title)s\t%(duration_string)s",
+        "--playlist-end", str(limit),
+        "--no-warnings",
+    ]
+    if proxy:
+        cmd.extend(["--proxy", proxy])
+
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=make_subprocess_env(), encoding="utf-8", errors="replace",
+    )
+    results = []
+    for line in proc.stdout:
+        parts = line.strip().split("\t")
+        if len(parts) >= 2:
+            vid, title = parts[0], parts[1]
+            results.append({
+                "id": vid,
+                "title": title,
+                "duration": parts[2] if len(parts) > 2 else "?",
+                "url": f"https://www.youtube.com/watch?v={vid}",
+            })
+    proc.wait()
+    if results:
+        return results, None
+    err = (proc.stderr.read() if proc.stderr else "") or ""
+    return [], err.strip() or None
+
+
+def _version_tag(title):
+    """Human-readable flag for a result that is not the studio original."""
+    if is_accompaniment(title):
+        return " [伴奏/纯音乐]"
+    if is_derivative(title):
+        return " [翻唱/现场]"
+    return ""
+
+
+def _print_search_results(platform, results, error=None):
+    if not results:
+        if platform == "bilibili":
+            print("No results or search failed.")
+            print("Tip: Try --platform youtube --proxy socks5://host:port")
+        elif platform == "ytmusic":
+            print("No results (ytmusicapi returned empty).")
+            print("Tip: Try --platform youtube or --proxy socks5://host:port")
+        elif platform == "soulseek":
+            print("No Soulseek results.")
+            print("Make sure SLSK_USERNAME and SLSK_PASSWORD are set.")
+        elif platform == "kuwo":
+            print("No Kuwo results.")
+        else:
+            if error:
+                print(f"Search error: {error}")
+            print("No results. Add --proxy if YouTube is blocked in your region.")
+        return
+
+    if platform == "bilibili":
+        for i, r in enumerate(results, 1):
+            print(f"  {i}. [{r['duration']}] {r['title']}{_version_tag(r.get('title', ''))}")
+            print(f"     Uploader: {r['uploader']} | Plays: {r['play']} | bvid: {r['bvid']}")
+            print()
+        print(f"Top {len(results)} results. Use --index N to download a specific result.")
+        print("Tip: 伴奏/纯音乐结果已排到列表后方，默认下载带人声版本。")
+    elif platform == "ytmusic":
+        for i, r in enumerate(results, 1):
+            dur = r.get("duration") or "?"
+            dur_str = f"{dur//60}:{dur%60:02d}" if isinstance(dur, int) else str(dur)
+            print(f"  {i}. [{dur_str}] {r['title']}")
+            print(f"     Artist: {r['artist']}" + (f" | Album: {r['album']}" if r['album'] else ""))
+            print(f"     {r['url']}")
+            print()
+        print(f"Top {len(results)} results. Use --index N to download a specific result.")
+    elif platform == "soulseek":
+        user_count = Counter(r["username"] for r in results)
+        print(f"Found {len(results)} files from {len(user_count)} users:\n")
+        for r in results:
+            name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+            size_mb = r["filesize"] / 1024 / 1024
+            slot_flag = "[FREE]" if r["has_free_slots"] else "[QUEUE]"
+            print(f"  {name}")
+            print(f"     User: {r['username']:20s} | {size_mb:.1f}MB | {r['extension']} {slot_flag}")
+            print()
+    elif platform == "kuwo":
+        for i, r in enumerate(results, 1):
+            dur = r.get("duration", 0)
+            dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
+            print(f"  {i}. [{dur_str}] {r['artist']} - {r['title']}{_version_tag(r.get('title', ''))}")
+            if r.get("album"):
+                print(f"     Album: {r['album']} | music_id: {r['music_id']}")
+            else:
+                print(f"     music_id: {r['music_id']}")
+            print()
+        print(f"Top {len(results)} results. Use --index N to download a specific result.")
+        print("Tip: 伴奏/翻唱/现场版本已排到列表后方，默认下载原版。")
+    else:
+        for i, r in enumerate(results, 1):
+            print(f"  {i}. [{r['duration']}] {r['title']}")
+            print(f"     {r['url']}")
+            print()
+
+
+def cmd_search(query, platform="auto", limit=5, proxy=None, json_output=False):
+    """Search for songs. Returns the result list; prints it unless --json."""
     py, _, _ = ensure_deps()
     if not py:
         print("ERROR: No Python with yt-dlp found. Run 'setup' first:")
@@ -902,107 +1013,38 @@ def cmd_search(query, platform="auto", limit=5, proxy=None):
     if platform == "auto":
         platform = auto_select_platform(query)
 
-    print(f"Searching on {platform} for: {query}")
-    print("=" * 60)
+    if not json_output:
+        print(f"Searching on {platform} for: {query}")
+        print("=" * 60)
 
+    error = None
     if platform == "bilibili":
-        # Use wbi API search (more reliable than yt-dlp's bilisearch)
-        results = bili_client.search(query, limit=limit)
-        if results:
-            results = rank_bili_results(results)
-            for i, r in enumerate(results, 1):
-                tag = " [伴奏/纯音乐]" if is_accompaniment(r.get("title", "")) else ""
-                print(f"  {i}. [{r['duration']}] {r['title']}{tag}")
-                print(f"     Uploader: {r['uploader']} | Plays: {r['play']} | bvid: {r['bvid']}")
-                print()
-            print(f"Top {len(results)} results. Use --index N to download a specific result.")
-            print("Tip: 伴奏/纯音乐结果已排到列表后方，默认下载带人声版本。")
-        else:
-            print("No results or search failed.")
-            print("Tip: Try --platform youtube --proxy socks5://host:port")
+        # wbi API search is more reliable than yt-dlp's bilisearch
+        results = rank_bili_results(bili_client.search(query, limit=limit))
     elif platform == "ytmusic":
         results = ytmusic_client.search(query, limit=limit)
-        if results:
-            for i, r in enumerate(results, 1):
-                dur = r.get("duration") or "?"
-                dur_str = f"{dur//60}:{dur%60:02d}" if isinstance(dur, int) else str(dur)
-                print(f"  {i}. [{dur_str}] {r['title']}")
-                print(f"     Artist: {r['artist']}" + (f" | Album: {r['album']}" if r['album'] else ""))
-                print(f"     {r['url']}")
-                print()
-            print(f"Top {len(results)} results. Use --index N to download a specific result.")
-        else:
-            print("No results (ytmusicapi returned empty).")
-            print("Tip: Try --platform youtube or --proxy socks5://host:port")
     elif platform == "soulseek":
-        print(f"Searching Soulseek for: {query}")
-        print("=" * 60)
-        results = soulseek_client.search(query, wait=15, max_results=limit * 10)
-        if results:
-            # Group by user
-            from collections import Counter
-            user_count = Counter(r["username"] for r in results)
-            print(f"Found {len(results)} files from {len(user_count)} users:\n")
-            for r in results[:limit]:
-                name = r["filename"].rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-                size_mb = r["filesize"] / 1024 / 1024
-                slot_flag = "[FREE]" if r["has_free_slots"] else "[QUEUE]"
-                print(f"  {name}")
-                print(f"     User: {r['username']:20s} | {size_mb:.1f}MB | {r['extension']} {slot_flag}")
-                print()
-        else:
-            print("No Soulseek results.")
-            print("Make sure SLSK_USERNAME and SLSK_PASSWORD are set.")
+        results = soulseek_client.search(query, wait=15, max_results=limit * 10)[:limit]
     elif platform == "kuwo":
-        results = kuwo_client.search(query, limit=limit)
-        if results:
-            for i, r in enumerate(results, 1):
-                dur = r.get("duration", 0)
-                dur_str = f"{dur // 60}:{dur % 60:02d}" if dur else "?"
-                print(f"  {i}. [{dur_str}] {r['artist']} - {r['title']}")
-                if r.get("album"):
-                    print(f"     Album: {r['album']} | music_id: {r['music_id']}")
-                else:
-                    print(f"     music_id: {r['music_id']}")
-                print()
-            print(f"Top {len(results)} results. Use --index N to download a specific result.")
-        else:
-            print("No Kuwo results.")
+        results = rank_kuwo_results(kuwo_client.search(query, limit=limit), query)
     else:
-        # YouTube search via yt-dlp
-        search_query = f"ytsearch:{query}"
-        cmd = [
-            py, "-m", "yt_dlp",
-            search_query,
-            "--flat-playlist",
-            "--print", "%(id)s\t%(title)s\t%(duration_string)s",
-            "--playlist-end", str(limit),
-            "--no-warnings",
-        ]
-        if proxy:
-            cmd.extend(["--proxy", proxy])
+        results, error = _search_youtube(py, query, limit, proxy)
 
-        env = make_subprocess_env()
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            env=env, encoding="utf-8", errors="replace",
-        )
-        count = 0
-        for line in proc.stdout:
-            parts = line.strip().split("\t")
-            if len(parts) >= 2:
-                count += 1
-                vid, title = parts[0], parts[1]
-                dur = parts[2] if len(parts) > 2 else "?"
-                print(f"  {count}. [{dur}] {title}")
-                print(f"     https://www.youtube.com/watch?v={vid}")
-                print()
-        proc.wait()
-        if count == 0:
-            err = proc.stderr.read() if proc.stderr else ""
-            if err:
-                print(f"Search error: {err.strip()}")
-            print("No results. Add --proxy if YouTube is blocked in your region.")
+    if json_output:
+        payload = {
+            "ok": not error,
+            "platform": platform,
+            "query": query,
+            "count": len(results),
+            "results": results,
+        }
+        if error:
+            payload["error"] = error
+        _emit_json(payload)
+    else:
+        _print_search_results(platform, results, error)
+
+    return results
 
 
 def cmd_meta(filepath, query=None, embed_thumbnail=True, json_output=False,
@@ -1282,6 +1324,12 @@ def _download_kuwo(
         print("\n  Kuwo search returned no results.")
         return {"ok": False, "platform": "kuwo", "query": query,
                 "error": "Kuwo search returned no results"}
+
+    results = rank_kuwo_results(results, query)
+    demoted = sum(1 for r in results
+                  if is_accompaniment(r.get("title", "")) or is_derivative(r.get("title", "")))
+    if demoted:
+        print(f"  (优先原版，已将 {demoted} 个伴奏/翻唱/现场版本排后)")
 
     item = results[min(index - 1, len(results) - 1)]
     music_id = item["music_id"]
@@ -2026,6 +2074,8 @@ Examples:
     p_search.add_argument("--platform", default="auto", choices=["auto", "bilibili", "youtube", "ytmusic", "soulseek", "kuwo"])
     p_search.add_argument("--limit", type=int, default=5)
     p_search.add_argument("--proxy", default=None)
+    p_search.add_argument("--json", action="store_true",
+                          help="Output machine-readable JSON instead of the ranked list")
 
     p_meta = sub.add_parser("meta", help="Update metadata for an existing audio file")
     p_meta.add_argument("filepath", help="Path to the audio file")
@@ -2074,7 +2124,8 @@ Examples:
         ok = cmd_check()
         sys.exit(0 if ok else 1)
     elif args.operation == "search":
-        cmd_search(args.query, args.platform, args.limit, args.proxy)
+        cmd_search(args.query, args.platform, args.limit, args.proxy,
+                   json_output=args.json)
     elif args.operation == "meta":
         cmd_meta(
             args.filepath,

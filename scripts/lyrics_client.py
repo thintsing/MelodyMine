@@ -5,16 +5,19 @@ Sources, in order: LRCLIB (free, no auth, well curated) then Kuwo, which
 covers CJK tracks LRCLIB misses and returns timestamps.
 """
 
-import difflib
 import json
 import os
-import re
 import sys
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from melodymine_common import is_accompaniment, is_derivative, strip_version_tag
+from melodymine_common import (
+    is_accompaniment,
+    is_derivative,
+    strip_version_tag,
+    text_sim,
+)
 
 UA = "MelodyMine/1.0 (music-downloader; +https://github.com/thintsing/MelodyMine)"
 
@@ -114,16 +117,6 @@ def _get_lyrics_lrclib(artist, title, album, timeout):
     return None
 
 
-# Punctuation and spacing vary wildly between sources for the same song, so
-# drop it before comparing.
-_LYRIC_NORM_RE = re.compile(r"[\s()\[\]{}【】《》〈〉·・、,，.。\-_/\\'\"’“”!！?？:：;；&+*]")
-
-
-def _lyric_sim(a, b):
-    return difflib.SequenceMatcher(None, _LYRIC_NORM_RE.sub("", a or "").lower(),
-                                   _LYRIC_NORM_RE.sub("", b or "").lower()).ratio()
-
-
 def _rank_kuwo_matches(results, artist, title):
     """Kuwo results that could be this song, best first.
 
@@ -136,9 +129,9 @@ def _rank_kuwo_matches(results, artist, title):
     scored = []
     for item in results:
         raw_title = item.get("title") or ""
-        if _lyric_sim(want_title, strip_version_tag(raw_title)) < 0.7:
+        if text_sim(want_title, strip_version_tag(raw_title)) < 0.7:
             continue
-        if artist and _lyric_sim(artist, item.get("artist")) < 0.5:
+        if artist and text_sim(artist, item.get("artist")) < 0.5:
             continue
         penalty = 0.0
         if is_accompaniment(raw_title):

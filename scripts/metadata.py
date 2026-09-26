@@ -26,7 +26,11 @@ import netease_client
 from melodymine_common import (
     find_ffmpeg,
     is_accompaniment,
+    is_derivative,
+    norm_cn,
     sanitize_filename,
+    strip_version_tag,
+    text_sim,
 )
 
 # ─── Audio file extensions (canonical source — shared by all modules) ────
@@ -72,23 +76,7 @@ def find_downloaded_file(output_dir, before=None):
 
 
 # ─── Chinese text normalization ────────────────────────────────────────
-
-_CHINESE_NORM_MAP = str.maketrans({
-    '倫': '伦', '傑': '杰', '樂': '乐', '國': '国', '雲': '云',
-    '會': '会', '個': '个', '時': '时', '間': '间', '說': '说',
-    '話': '话', '愛': '爱', '點': '点', '萬': '万', '龍': '龙',
-    '聲': '声', '體': '体', '學': '学', '問': '问', '車': '车',
-    '門': '门', '開': '开', '關': '关', '風': '风', '飛': '飞',
-    '馬': '马', '魚': '鱼', '鳥': '鸟', '與': '与', '從': '从',
-    '來': '来', '東': '东', '發': '发', '電': '电', '燈': '灯',
-    '當': '当', '後': '后', '書': '书', '長': '长', '見': '见',
-    '貝': '贝', '麵': '面',
-})
-
-
-def _norm_cn(s):
-    """Normalize Chinese text: map traditional → simplified for matching."""
-    return s.translate(_CHINESE_NORM_MAP) if s else s
+# norm_cn lives in melodymine_common so lyric matching can use it too.
 
 
 def _clean_artist(name):
@@ -183,7 +171,7 @@ def parse_bili_title(title):
     return artist, song_name
 
 
-# ─── Bilibili result ranking ───────────────────────────────────────────
+# ─── Search result ranking ─────────────────────────────────────────────
 
 def rank_bili_results(results):
     """Reorder Bilibili search results so non-accompaniment entries come first.
@@ -196,6 +184,47 @@ def rank_bili_results(results):
     vocal = [r for r in results if not is_accompaniment(r.get("title", ""))]
     accomp = [r for r in results if is_accompaniment(r.get("title", ""))]
     return vocal + accomp
+
+
+# How much longer than the query a title may be before it looks like a video
+# upload ("你不要担心：承载了多少人的青春，《请回答1988》主题曲") rather than a release.
+_PROSE_TITLE_SLACK = 8
+
+
+def rank_kuwo_results(results, query=None):
+    """Reorder Kuwo results so the original studio recording comes first.
+
+    Kuwo's API order is popularity-weighted, which puts cover channels, live
+    cuts and video-style uploads above the original. Score each result by how
+    well it matches the query, then demote accompaniments, derivative versions
+    and prose titles. Ties keep their API order.
+
+    This narrows the candidates; it cannot identify *the* original when the
+    query names no artist, since several unrelated artists may have recorded
+    the same song.
+    """
+    q_artist, q_title = parse_search_query(query) if query else (None, "")
+    want_title = strip_version_tag(q_title or query or "")
+
+    scored = []
+    for item in results:
+        raw_title = item.get("title") or ""
+        clean_title = strip_version_tag(raw_title)
+        relevance = text_sim(want_title, clean_title)
+        if q_artist:
+            relevance = 0.6 * relevance + 0.4 * text_sim(q_artist, item.get("artist"))
+
+        penalty = 0.0
+        if is_accompaniment(raw_title):
+            penalty += 0.5
+        if is_derivative(raw_title):
+            penalty += 0.3
+        if len(clean_title) - len(want_title) > _PROSE_TITLE_SLACK:
+            penalty += 0.2
+        scored.append((penalty - relevance, item))
+
+    scored.sort(key=lambda pair: pair[0])
+    return [item for _, item in scored]
 
 
 # ─── Audio tag I/O ─────────────────────────────────────────────────────
@@ -365,17 +394,17 @@ def _score_metadata_candidate(r, artist, title, *, collaboration_aware=False, bo
     is_collab = collaboration_aware and ("," in r_artist_raw or "，" in r_artist_raw)
 
     score = 0
-    if _norm_cn(r_artist) == _norm_cn(artist):
+    if norm_cn(r_artist) == norm_cn(artist):
         score += 5 if is_collab else 20
     elif collaboration_aware:
-        if _norm_cn(artist) in _norm_cn(r_artist_raw):
+        if norm_cn(artist) in norm_cn(r_artist_raw):
             score += 3
-    elif _norm_cn(artist) in _norm_cn(r_artist):
+    elif norm_cn(artist) in norm_cn(r_artist):
         score += 8
 
-    if _norm_cn(r_title) == _norm_cn(title):
+    if norm_cn(r_title) == norm_cn(title):
         score += 5
-    elif _norm_cn(title) in _norm_cn(r_title) or _norm_cn(r_title) in _norm_cn(title):
+    elif norm_cn(title) in norm_cn(r_title) or norm_cn(r_title) in norm_cn(title):
         score += 2
 
     if bonus_fields:

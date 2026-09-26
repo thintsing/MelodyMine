@@ -6,7 +6,7 @@ Run with:  python -m unittest tests.test_helpers -v
 
 Uses only the standard library (unittest) — no pytest dependency.
 Covers the pure functions most likely to break during refactors:
-parse_search_query, parse_bili_title, _clean_artist, _norm_cn,
+parse_search_query, parse_bili_title, _clean_artist, norm_cn,
 auto_select_platform, is_spotify_url, sanitize_filename, is_chinese.
 """
 
@@ -43,19 +43,21 @@ from melodymine_common import (  # noqa: E402
     is_spotify_url,
     is_youtube_url,
     make_subprocess_env,
+    norm_cn,
     proxy_to_env,
     sanitize_filename,
     strip_version_tag,
+    text_sim,
 )
 from metadata import (  # noqa: E402
     _best_metadata_candidate,
     _clean_artist,
-    _norm_cn,
     _score_metadata_candidate,
     find_downloaded_file,
     parse_bili_title,
     parse_search_query,
     rank_bili_results,
+    rank_kuwo_results,
 )
 from metadata import (
     list_audio_files as _list_audio_files,
@@ -173,22 +175,74 @@ class TestNormCn(unittest.TestCase):
 
     def test_traditional_to_simplified(self):
         # 倫→伦 is in the map
-        self.assertEqual(_norm_cn("\u5468\u6770\u502b"), "\u5468\u6770\u4f26")  # 周杰倫→周杰伦
+        self.assertEqual(norm_cn("\u5468\u6770\u502b"), "\u5468\u6770\u4f26")  # 周杰倫→周杰伦
         # 學→学 is in the map; 張/友 are NOT
-        self.assertEqual(_norm_cn("\u5f35\u5b78\u53cb"), "\u5f35\u5b66\u53cb")  # 張學友→张学友
+        self.assertEqual(norm_cn("\u5f35\u5b78\u53cb"), "\u5f35\u5b66\u53cb")  # 張學友→张学友
         # 劉/德/華 are all NOT in the map → unchanged
-        self.assertEqual(_norm_cn("\u5289\u5fb7\u83ef"), "\u5289\u5fb7\u83ef")  # 劉德華 unchanged
+        self.assertEqual(norm_cn("\u5289\u5fb7\u83ef"), "\u5289\u5fb7\u83ef")  # 劉德華 unchanged
 
     def test_already_simplified_unchanged(self):
-        self.assertEqual(_norm_cn("\u5468\u6770\u4f26"), "\u5468\u6770\u4f26")  # 周杰伦
+        self.assertEqual(norm_cn("\u5468\u6770\u4f26"), "\u5468\u6770\u4f26")  # 周杰伦
 
     def test_empty_string(self):
-        self.assertEqual(_norm_cn(""), "")
-        self.assertEqual(_norm_cn(None), None)
+        self.assertEqual(norm_cn(""), "")
+        self.assertEqual(norm_cn(None), None)
 
     def test_mixed_text(self):
         # Traditional artist with simplified query should match after norm
-        self.assertEqual(_norm_cn("\u5468\u6770\u502b - \u7a3b\u9999"), "\u5468\u6770\u4f26 - \u7a3b\u9999")
+        self.assertEqual(norm_cn("\u5468\u6770\u502b - \u7a3b\u9999"), "\u5468\u6770\u4f26 - \u7a3b\u9999")
+
+
+class TestTextSim(unittest.TestCase):
+    """text_sim: script/punctuation-insensitive similarity used by the rankers."""
+
+    def test_traditional_simplified_pair_scores_high(self):
+        # 原來的我 vs 原来的我 — only 來 differs by script, so this must be ~1.0.
+        self.assertGreaterEqual(text_sim("\u539f\u4f86\u7684\u6211", "\u539f\u6765\u7684\u6211"), 0.99)
+
+    def test_punctuation_and_case_ignored(self):
+        self.assertAlmostEqual(text_sim("Hello, World!", "hello world"), 1.0)
+
+    def test_different_titles_score_low(self):
+        self.assertLess(text_sim("\u7a97\u5916", "\u7a3b\u9999"), 0.5)  # 窗外 vs 稻香
+
+    def test_empty_inputs(self):
+        self.assertEqual(text_sim("", ""), 1.0)
+        self.assertEqual(text_sim(None, "x"), 0.0)
+
+
+class TestRankKuwoResults(unittest.TestCase):
+    """rank_kuwo_results: originals first, accompaniment/cover/live demoted."""
+
+    @staticmethod
+    def _item(title, artist="Artist"):
+        return {"title": title, "artist": artist, "music_id": "1"}
+
+    def test_accompaniment_demoted_below_vocal(self):
+        results = [self._item("\u9ed8 (\u4f34\u594f)"), self._item("\u9ed8")]  # 默 (伴奏), 默
+        self.assertEqual(rank_kuwo_results(results, "\u5f20\u6770 \u9ed8")[0]["title"], "\u9ed8")
+
+    def test_cover_and_live_demoted(self):
+        results = [
+            self._item("\u9ed8 (Live)"),
+            self._item("\u9ed8 (\u7ffb\u5531)"),  # 默 (翻唱)
+            self._item("\u9ed8"),
+        ]
+        ranked = rank_kuwo_results(results, "\u5f20\u6770 \u9ed8")
+        self.assertEqual(ranked[0]["title"], "\u9ed8")
+        self.assertEqual({r["title"] for r in ranked[1:]}, {"\u9ed8 (Live)", "\u9ed8 (\u7ffb\u5531)"})
+
+    def test_version_tag_on_right_song_still_matches(self):
+        # A live cut of the right song must not be dropped, only ranked lower.
+        results = [self._item("\u9ed8 (Live)")]
+        self.assertEqual(len(rank_kuwo_results(results, "\u5f20\u6770 \u9ed8")), 1)
+
+    def test_no_query_keeps_all_results(self):
+        results = [self._item("\u9ed8 (\u4f34\u594f)"), self._item("\u9ed8")]
+        self.assertEqual(len(rank_kuwo_results(results, None)), 2)
+
+    def test_empty_results(self):
+        self.assertEqual(rank_kuwo_results([], "\u9ed8"), [])
 
 
 class TestAutoSelectPlatform(unittest.TestCase):
