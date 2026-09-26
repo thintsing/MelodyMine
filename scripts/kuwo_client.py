@@ -6,8 +6,6 @@ the DES encryption required by the official mobi.kuwo.cn API.
 """
 
 import json
-import os
-import re
 import sys
 import urllib.error
 import urllib.parse

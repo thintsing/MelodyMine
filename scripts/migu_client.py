@@ -6,8 +6,6 @@ identification is via static app headers (ua / version / channel).
 """
 
 import json
-import os
-import re
 import sys
 import urllib.error
 import urllib.parse

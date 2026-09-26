@@ -193,7 +193,7 @@ class TestSaveLrc(unittest.TestCase):
             self.assertTrue(lrc_path.endswith(".lrc"))
             self.assertTrue(os.path.isfile(lrc_path))
 
-            with open(lrc_path, "r", encoding="utf-8") as f:
+            with open(lrc_path, encoding="utf-8") as f:
                 content = f.read()
             self.assertEqual(content, synced)
 
@@ -206,7 +206,7 @@ class TestSaveLrc(unittest.TestCase):
             lrc_path = lyrics_client.save_lrc(audio_path, "", plain_lyrics=plain)
 
             self.assertIsNotNone(lrc_path)
-            with open(lrc_path, "r", encoding="utf-8") as f:
+            with open(lrc_path, encoding="utf-8") as f:
                 content = f.read()
             self.assertEqual(content, plain)
 
@@ -219,7 +219,7 @@ class TestSaveLrc(unittest.TestCase):
             plain = "Plain line"
             lrc_path = lyrics_client.save_lrc(audio_path, synced, plain_lyrics=plain)
 
-            with open(lrc_path, "r", encoding="utf-8") as f:
+            with open(lrc_path, encoding="utf-8") as f:
                 content = f.read()
             self.assertEqual(content, synced)
 

@@ -8,8 +8,6 @@ Also includes a tracker CDN fallback using only MD5 (stdlib hashlib).
 
 import hashlib
 import json
-import os
-import re
 import sys
 import urllib.error
 import urllib.parse

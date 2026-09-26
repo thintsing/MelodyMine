@@ -6,7 +6,6 @@ No authentication required — just an app_name identifier.
 """
 
 import json
-import os
 import sys
 import urllib.error
 import urllib.parse
