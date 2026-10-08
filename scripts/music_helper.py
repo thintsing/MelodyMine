@@ -60,6 +60,7 @@ from melodymine_common import (
     make_subprocess_env,
     pip_install,
     probe_audio,
+    proxy_to_env,
     run_streaming,
     sanitize_filename,
     set_debug,
@@ -136,6 +137,16 @@ def _build_ytdlp_cmd(
     return cmd
 
 
+def _spotdl_bitrate(bitrate):
+    """Lower-case a ``320K``-style bitrate for spotdl.
+
+    spotdl validates ``--bitrate`` against a literal list of lowercase choices,
+    so the ``320K`` that ffmpeg happily accepts is rejected outright by its parser.
+    """
+    text = str(bitrate)
+    return text.lower() if re.fullmatch(r"\d+[Kk]", text) else text
+
+
 def _build_spotdl_cmd(python, url, output, fmt, bitrate=None, proxy=None):
     """Build the spotdl download command list.
 
@@ -148,7 +159,12 @@ def _build_spotdl_cmd(python, url, output, fmt, bitrate=None, proxy=None):
         "--print-errors",
     ]
     if bitrate:
-        cmd.extend(["--bitrate", str(bitrate)])
+        cmd.extend(["--bitrate", _spotdl_bitrate(bitrate)])
+    # spotdl aborts before doing anything if ffmpeg is not on PATH, even when the
+    # project already located one through imageio-ffmpeg.
+    ffmpeg = find_ffmpeg(python) or find_ffmpeg()
+    if ffmpeg:
+        cmd.extend(["--ffmpeg", ffmpeg])
     cmd.extend(build_spotdl_proxy_args(proxy))
     return cmd
 
@@ -2356,8 +2372,11 @@ def _download_via_spotdl(python, url, fmt, output, proxy, bitrate):
     cmd = _build_spotdl_cmd(python, url, output, fmt, bitrate, proxy)
 
     env = make_subprocess_env()
-    if proxy and proxy.startswith("socks5"):
-        env["ALL_PROXY"] = proxy
+    if proxy:
+        # --proxy only reaches yt-dlp. spotdl's own Spotify lookup goes through a
+        # plain HTTP client that reads the process environment, so without these it
+        # connects directly and hangs even when a working proxy was supplied.
+        env.update(proxy_to_env(proxy))
 
     print("=" * 60)
     print("  Engine   : spotDL (Spotify URL)")

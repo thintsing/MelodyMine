@@ -976,6 +976,69 @@ class TestBuildSpotdlProxyArgs(unittest.TestCase):
         )
 
 
+class TestSpotdlCommand(unittest.TestCase):
+    """spotdl's own parser is stricter than ffmpeg - the command has to match it."""
+
+    def test_uppercase_bitrate_is_lowercased(self):
+        self.assertEqual(music_helper._spotdl_bitrate("320K"), "320k")
+        self.assertEqual(music_helper._spotdl_bitrate("128k"), "128k")
+
+    def test_non_bitrate_choices_are_untouched(self):
+        for value in ("auto", "disable", "2", 96):
+            self.assertEqual(music_helper._spotdl_bitrate(value), str(value))
+
+    def test_command_carries_lowercase_bitrate_and_ffmpeg(self):
+        with patch.object(music_helper, "find_ffmpeg", return_value="/opt/ffmpeg"):
+            cmd = music_helper._build_spotdl_cmd(
+                "python", "https://open.spotify.com/track/x", "/out", "mp3", "320K", None
+            )
+        self.assertEqual(cmd[cmd.index("--bitrate") + 1], "320k")
+        self.assertEqual(cmd[cmd.index("--ffmpeg") + 1], "/opt/ffmpeg")
+
+    def test_command_omits_ffmpeg_when_discovery_fails(self):
+        with patch.object(music_helper, "find_ffmpeg", return_value=None):
+            cmd = music_helper._build_spotdl_cmd(
+                "python", "https://open.spotify.com/track/x", "/out", "mp3", None, None
+            )
+        self.assertNotIn("--ffmpeg", cmd)
+
+
+class TestSpotdlProxyEnv(unittest.TestCase):
+    """--proxy reaches yt-dlp only; spotdl's Spotify lookup needs the env vars."""
+
+    def _run(self, proxy):
+        captured = {}
+
+        def fake_run_streaming(cmd, env=None, **kwargs):
+            captured["env"] = env
+            return 0
+
+        with (
+            patch.object(music_helper, "has_spotdl", return_value="4.5.2"),
+            patch.object(music_helper, "run_streaming", side_effect=fake_run_streaming),
+            patch.object(music_helper, "make_subprocess_env", return_value={}),
+            patch.object(music_helper.os, "makedirs"),
+        ):
+            music_helper._download_via_spotdl(
+                "python", "https://open.spotify.com/track/x", "mp3", "/out", proxy, "320k"
+            )
+        return captured["env"]
+
+    def test_http_proxy_sets_both_env_vars(self):
+        env = self._run("http://127.0.0.1:7897")
+        self.assertEqual(env["HTTP_PROXY"], "http://127.0.0.1:7897")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:7897")
+
+    def test_socks5_proxy_sets_all_proxy(self):
+        env = self._run("socks5://127.0.0.1:1080")
+        self.assertEqual(env["ALL_PROXY"], "socks5://127.0.0.1:1080")
+
+    def test_no_proxy_leaves_env_alone(self):
+        env = self._run(None)
+        self.assertNotIn("HTTP_PROXY", env)
+        self.assertNotIn("ALL_PROXY", env)
+
+
 class TestProxyToEnv(unittest.TestCase):
     """proxy_to_env: maps proxy URL to env dict for requests."""
 
