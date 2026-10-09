@@ -7,6 +7,10 @@ pysocks>=1.7.1
 # FFmpeg (no system install needed — this pip package bundles a static binary)
 imageio-ffmpeg>=0.6.0
 
+# Spotdl already pulls this in, but bili_album_verify.py reads MP4 atoms with it
+# directly, so the requirement is stated rather than inherited.
+mutagen>=1.47.0
+
 # Spotify URL support (hard-capped to major 4 — MelodyMine imports spotdl's
 # internal SpotifyClient API, which breaks across major versions).
 # To upgrade: test with the new version, then bump the range in

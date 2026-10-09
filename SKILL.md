@@ -1,6 +1,6 @@
 ---
 name: melodymine
-description: "Download music with MelodyMine from Bilibili, YouTube, YouTube Music, Spotify URLs, NetEase URLs, Kuwo, Kugou, Audius, and Soulseek P2P. Use when the user asks to download/save songs, albums, playlists, music URLs, Chinese songs, English songs, Spotify tracks, NetEase/网易云 links, Bilibili/YouTube audio, FLAC/MP3 music, lyrics/歌词, backfill lyrics for a library, or says phrases like 下载歌曲, 下载音乐, 下载这首歌, 下载歌单, 下载这个链接, 用 MelodyMine 下载, download music, download song, save this track, sync Spotify playlist."
+description: "Download music with MelodyMine from Bilibili, YouTube, YouTube Music, Spotify URLs, NetEase URLs, Kuwo, Kugou, Audius, and Soulseek P2P. Use when the user asks to download/save songs, albums, playlists, music URLs, Chinese songs, English songs, Spotify tracks, NetEase/网易云 links, Bilibili/YouTube audio, FLAC/MP3 music, lyrics/歌词, backfill lyrics for a library, save a multi-part Bilibili audiobook (有声书/听书) into Audiobookshelf, or says phrases like 下载歌曲, 下载音乐, 下载这首歌, 下载歌单, 下载这个链接, 下载有声书, 放到听书目录, 用 MelodyMine 下载, download music, download song, save this track, sync Spotify playlist."
 ---
 
 # MelodyMine
@@ -261,6 +261,35 @@ Tracks whose title cannot be determined — no usable tags and a filename like `
 | YouTube/SoundCloud/Bandcamp URL | yt-dlp direct download | No search step — yt-dlp downloads the URL directly. YouTube may need proxy/cookies. |
 | Force Soulseek (`--platform soulseek`) | Soulseek P2P network | ⚠️ Requires `SLSK_USERNAME` and `SLSK_PASSWORD` env vars. Downloads the best FLAC from the first user with free slots. |
 | Force quick (`--quick`) | Bilibili or YouTube (skip Soulseek) | Skips the Soulseek P2P tier entirely. Useful when Soulseek is slow/unavailable or for faster downloads. |
+
+## Audiobooks (multi-part Bilibili uploads)
+
+For a `bilibili.com/video/BV...` upload whose parts are the chapters of one
+book, use the audiobook pipeline instead of `music_helper.py download`. Each
+part becomes one `.m4a` tagged album/artist/title/track, so the player can
+resume inside a 14-hour book.
+
+```
+python scripts/bili_album_probe.py BV1nFcLzaEGb probe.txt   # read the part list first
+python scripts/bili_album_dl.py --bvid BV1nFcLzaEGb --out <dir> \
+    --album "人类简史：从动物到上帝" --artist "尤瓦尔·赫拉利" --strip-regex "^完整版："
+python scripts/bili_album_verify.py <dir>                    # re-derives names/tags from book.json
+python scripts/douban_cover.py --out <dir> "书名"             # pick the edition by the infobox
+```
+
+- The real book title, author and translator live in the video `desc`, not in
+  `title`; P1 is usually a summary, and P2 often carries a `完整版：` prefix.
+- `--album`/`--artist` must be set from `desc` — the uploader name is a site
+  handle, not the author. Read the probe output before choosing.
+- Leave `--comment` empty. A comment, or the `desc` atom ffmpeg inherits from
+  the source, becomes the book synopsis, and Audiobookshelf caches it per item
+  path and will not drop it afterwards.
+- On Windows a Chinese argument does not survive cmd's argv encoding: write a
+  small UTF-8 driver that sets `sys.argv` and `exec(compile(open(...)))` the
+  downloader.
+- `bili_album_verify.py` output (`md5.txt`, `verify.txt`) is what the server
+  install is checked against; see `scripts/audiobook_install.sh` for the package
+  layout and pack `pkg.tgz` with `--files-from`, since part titles contain spaces.
 
 ## Error Handling
 

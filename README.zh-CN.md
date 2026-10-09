@@ -26,6 +26,7 @@
 | **无损音质** | 酷我 / 酷狗 / Soulseek / 网易云原生 FLAC — 按音源自动检测 |
 | **智能元数据** | MusicBrainz + 网易云 + iTunes 多源查询，封面嵌入，自动重命名 |
 | **同步歌词** | LRCLIB + 酷我双源 — 每首歌旁生成时间同步的 `.lrc`；`lyrics-sync` 可批量补全整个曲库 |
+| **整本有声书** | B 站多 P 上传按章节整本下载入库 Audiobookshelf，带专辑/作者/曲目号标签与豆瓣封面 |
 | **优先原版** | 伴奏、翻唱、现场、混音版本自动排到录音室原版之后 |
 | **零配置** | 自动检测 Python 运行时、安装依赖、查找 ffmpeg — 一条 `setup` 命令搞定 |
 | **AI 原生** | 可作为独立 CLI 运行，也可作为 AI 助手的文件型 Skill；search/download 均支持 `--json` |
@@ -111,6 +112,29 @@ python scripts/music_helper.py lyrics-sync "D:\Music"
 python scripts/music_helper.py lyrics-sync "D:\Music" --dry-run     # 只报告不写入
 python scripts/music_helper.py lyrics-sync "D:\Music" --overwrite   # 重新抓取
 ```
+
+### 有声书（B 站多 P 上传）
+
+整本有声书的每一 P 是一个章节，下载成一个 `NNNN-章节名.m4a` 文件夹，带上
+专辑/作者/曲名/trackno 标签，播放器才能在一本十几小时的书里续播。
+
+```bash
+# 先看分 P 清单（书名/作者/译者通常在简介里，不在标题里）
+python scripts/bili_album_probe.py BV1nFcLzaEGb probe.txt
+
+# 下载全部 P；--album/--artist 按简介填写，不要用上传者账号名
+python scripts/bili_album_dl.py --bvid BV1nFcLzaEGb --out "D:\ab" \
+    --album "人类简史：从动物到上帝" --artist "尤瓦尔·赫拉利" --strip-regex "^完整版："
+
+# 独立复核：从 book.json 重算期望文件名与标签，产出 md5.txt / verify.txt
+python scripts/bili_album_verify.py "D:\ab"
+
+# 豆瓣封面：按信息栏（译者/出版社/出版年）对版本，再取大图
+python scripts/douban_cover.py --out "D:\ab" "人类简史：从动物到上帝"
+```
+
+服务器侧入库见 `scripts/audiobook_install.sh`（Audiobookshelf 的目录是监听路径，
+放进 `audiobooks/<书名>/` 即自动扫描入库）。
 
 ### 预演 & JSON 输出
 

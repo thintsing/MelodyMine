@@ -26,6 +26,7 @@ Search, download, and tag music from **10+ platforms** — with lossless FLAC, a
 | **Lossless Audio** | FLAC / WAV / ALAC from Kuwo, Kugou, Soulseek, NetEase — auto-detected per source |
 | **Smart Metadata** | MusicBrainz + NetEase + iTunes multi-source lookup, cover art embedding, auto rename |
 | **Synced Lyrics** | LRCLIB + Kuwo — time-synced `.lrc` beside every track, plus `lyrics-sync` to backfill a whole library |
+| **Whole Audiobooks** | Multi-part Bilibili uploads downloaded chapter by chapter into Audiobookshelf, tagged with album/artist/track number plus a Douban cover |
 | **Originals First** | Accompaniment, cover, live and remix editions are ranked below the studio recording |
 | **Zero Config** | Auto-detects Python runtime, installs deps, finds ffmpeg — one `setup` command |
 | **AI-Native** | Runs as a standalone CLI or as a file-based skill for AI assistants; `--json` on search/download |
@@ -111,6 +112,31 @@ python scripts/music_helper.py lyrics-sync "D:\Music"
 python scripts/music_helper.py lyrics-sync "D:\Music" --dry-run     # report only
 python scripts/music_helper.py lyrics-sync "D:\Music" --overwrite   # re-fetch
 ```
+
+### Audiobooks (multi-part Bilibili uploads)
+
+When every part of an upload is a chapter of one book, download the whole thing
+as a folder of `NNNN-<chapter>.m4a` files tagged with album/artist/title/track,
+so a player can resume inside a 14-hour book.
+
+```bash
+# Read the part list first (the real title/author/translator live in the description, not the title)
+python scripts/bili_album_probe.py BV1nFcLzaEGb probe.txt
+
+# Download every part; set --album/--artist from the description, not the uploader handle
+python scripts/bili_album_dl.py --bvid BV1nFcLzaEGb --out "D:\ab" \
+    --album "人类简史：从动物到上帝" --artist "尤瓦尔·赫拉利" --strip-regex "^完整版："
+
+# Independent check: re-derives the expected names and tags from book.json, writes md5.txt / verify.txt
+python scripts/bili_album_verify.py "D:\ab"
+
+# Douban cover: choose the edition by its infobox (translator/publisher/year)
+python scripts/douban_cover.py --out "D:\ab" "人类简史：从动物到上帝"
+```
+
+Server-side installation is `scripts/audiobook_install.sh` — Audiobookshelf
+watches its library folder, so dropping the files in `audiobooks/<title>/` is
+picked up without touching the UI.
 
 ### Dry Run & JSON
 
