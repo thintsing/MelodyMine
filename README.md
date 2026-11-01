@@ -145,12 +145,28 @@ picked up without touching the UI.
 
 ### Spotify Playlists
 
-Spotify API access is blocked from mainland China. Use the browser-assisted workflow:
+Spotify API access is blocked from mainland China. Use the batch downloader with a JSON track list:
 
 ```bash
-# 1. Extract playlist metadata via browser MCP (returns JSON with track list)
-# 2. Download each track via yt-dlp + YouTube search
-python scripts/spotify_helper.py download "https://open.spotify.com/playlist/..." --proxy http://127.0.0.1:7897
+# 1. Create a JSON file with the track list (manually or via browser MCP)
+cat > playlist.json <<'EOF'
+{
+  "name": "My Playlist",
+  "tracks": [
+    {"artist": "Artist Name", "title": "Song Title"},
+    {"artist": "Another Artist", "title": "Another Song"}
+  ]
+}
+EOF
+
+# 2. Download all tracks (auto-detects proxy, writes ID3 tags)
+python scripts/spotify_batch_dl.py playlist.json
+
+# 3. Download and upload to Plex in one step
+python scripts/spotify_batch_dl.py playlist.json --upload-plex
+
+# 4. Specify format and output directory
+python scripts/spotify_batch_dl.py playlist.json --format flac --output "D:\Music\Playlist"
 
 # Single tracks work directly via Kuwo/Kugou:
 python scripts/music_helper.py download "A2O LITE NEON" --platform kuwo
@@ -310,6 +326,7 @@ MelodyMine/
 │   ├── melodymine_common.py   # Shared infra: Python/venv/pip/ffmpeg/proxy detection
 │   ├── metadata.py            # Multi-source metadata (MusicBrainz + NetEase + iTunes)
 │   ├── spotify_helper.py      # Advanced spotDL operations (playlist sync, URL resolve)
+│   ├── spotify_batch_dl.py    # Spotify playlist batch downloader (JSON → yt-dlp → tags)
 │   ├── bili_client.py         # Bilibili WBI API search (stdlib only)
 │   ├── kuwo_client.py         # Kuwo Music search + CDN download URL + lyrics (stdlib only)
 │   ├── audius_client.py       # Audius Web3 music search + stream (stdlib only)
