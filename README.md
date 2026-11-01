@@ -94,6 +94,11 @@ python scripts/music_helper.py download "Artist Song" --output "D:\Music"
 python scripts/music_helper.py download "The Weeknd" --proxy socks5://127.0.0.1:7897
 python scripts/music_helper.py download "Artist Song" --cookies "cookies.txt"
 
+# Auto-extract cookies from browser (no manual export needed)
+python scripts/music_helper.py download "YouTube URL" --cookies-from-browser chrome
+python scripts/music_helper.py download "YouTube URL" --cookies-from-browser edge
+python scripts/music_helper.py download "YouTube URL" --cookies-from-browser firefox
+
 # Skip lyrics or metadata
 python scripts/music_helper.py download "Song" --no-lyrics
 python scripts/music_helper.py download "Song" --no-metadata
@@ -178,6 +183,8 @@ Options:
   --output PATH                       Output directory
   --proxy URL                         Proxy URL (e.g. socks5://host:port)
   --cookies PATH                      cookies.txt for YouTube
+  --cookies-from-browser {chrome,edge,firefox,opera,brave}
+                                      Extract cookies from browser (no manual export)
   --bitrate RATE                      Audio bitrate (e.g. 320K)
   --index N                           Search result index (1-based)
   --no-thumbnail                      Skip cover art embedding

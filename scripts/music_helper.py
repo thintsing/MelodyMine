@@ -100,7 +100,7 @@ def has_spotdl(python):
 def _build_ytdlp_cmd(
     python, url_or_query, output, fmt, bitrate=None,
     embed_thumbnail=True, proxy=None, bili_ua=False, index=1,
-    cookies=None, ffmpeg_location=None,
+    cookies=None, cookies_from_browser=None, ffmpeg_location=None,
 ):
     """Build the yt-dlp command list.
 
@@ -134,6 +134,8 @@ def _build_ytdlp_cmd(
         cmd.extend(["--proxy", proxy])
     if cookies:
         cmd.extend(["--cookies", cookies])
+    if cookies_from_browser:
+        cmd.extend(["--cookies-from-browser", cookies_from_browser])
     return cmd
 
 
@@ -189,6 +191,7 @@ _DIRECT_API_ENGINES = {
 def _download_plan(
     query, platform="auto", fmt="flac", output=None, proxy=None, bitrate=None,
     index=1, embed_thumbnail=True, no_metadata=False, cookies=None,
+    cookies_from_browser=None,
 ):
     """Build a side-effect-free execution plan for dry-run and JSON reporting."""
     if not output:
@@ -240,7 +243,7 @@ def _download_plan(
         command = _build_ytdlp_cmd(
             "python", query, output, cmd_fmt, cmd_bitrate,
             embed_thumbnail=embed_thumbnail, proxy=proxy, cookies=cookies,
-            index=index,
+            cookies_from_browser=cookies_from_browser, index=index,
         )
         return {
             "ok": True,
@@ -252,6 +255,7 @@ def _download_plan(
             "output": output,
             "proxy": proxy,
             "cookies": cookies,
+            "cookies_from_browser": cookies_from_browser,
             "index": index,
             "embed_thumbnail": embed_thumbnail,
             "metadata": not no_metadata,
@@ -267,6 +271,7 @@ def _download_plan(
             "python", url, output, cmd_fmt, cmd_bitrate,
             embed_thumbnail=embed_thumbnail, bili_ua=True,
             index=1, proxy=proxy, cookies=cookies,
+            cookies_from_browser=cookies_from_browser,
         )
         notes = ["Bilibili URL: direct download of the given video id (no search step)."]
         if not bvid:
@@ -283,6 +288,7 @@ def _download_plan(
             "output": output,
             "proxy": proxy,
             "cookies": cookies,
+            "cookies_from_browser": cookies_from_browser,
             "index": 1,
             "embed_thumbnail": embed_thumbnail,
             "metadata": not no_metadata,
@@ -332,6 +338,7 @@ def _download_plan(
         embed_thumbnail=embed_thumbnail,
         bili_ua=(selected == "bilibili"),
         index=index, proxy=proxy, cookies=cookies,
+        cookies_from_browser=cookies_from_browser,
         # ffmpeg_location omitted on dry-run — it's a runtime-resolved path
     )
 
@@ -348,6 +355,7 @@ def _download_plan(
         "output": output,
         "proxy": proxy,
         "cookies": cookies,
+        "cookies_from_browser": cookies_from_browser,
         "index": index,
         "embed_thumbnail": embed_thumbnail,
         "metadata": not no_metadata,
@@ -367,6 +375,8 @@ def _print_plan(plan):
         print(f"Proxy    : {plan['proxy']}")
     if plan.get("cookies"):
         print(f"Cookies  : {plan['cookies']}")
+    if plan.get("cookies_from_browser"):
+        print(f"Cookies (browser): {plan['cookies_from_browser']}")
     # yt-dlp and spotDL plans carry an argv list; the direct-API plans carry a
     # human-readable string, since there is no subprocess to spell out.
     command = plan["command"]
@@ -458,7 +468,7 @@ def _finalize_download_result(result, output):
 def _ytdlp_download(
     python, url_or_query, output, fmt, bitrate=None,
     embed_thumbnail=True, proxy=None, bili_ua=False, index=1,
-    cookies=None,
+    cookies=None, cookies_from_browser=None,
 ):
     """Run yt-dlp to download and convert audio. Returns True on success."""
     # Tell yt-dlp where ffmpeg is (critical when using imageio-ffmpeg).
@@ -468,7 +478,8 @@ def _ytdlp_download(
     cmd = _build_ytdlp_cmd(
         python, url_or_query, output, fmt, bitrate,
         embed_thumbnail=embed_thumbnail, proxy=proxy, bili_ua=bili_ua,
-        index=index, cookies=cookies, ffmpeg_location=ffmpeg_exe,
+        index=index, cookies=cookies, cookies_from_browser=cookies_from_browser,
+        ffmpeg_location=ffmpeg_exe,
     )
 
     env = make_subprocess_env()
@@ -595,7 +606,7 @@ def _bili_resolve_audio(bvid, python=None):
     return audio_streams[0].get("baseUrl"), audio_streams[0].get("codecs", "")
 
 
-def _probe_ytdlp_codec(python, target, index=1, timeout=30, proxy=None, cookies=None):
+def _probe_ytdlp_codec(python, target, index=1, timeout=30, proxy=None, cookies=None, cookies_from_browser=None):
     """Probe the audio codec yt-dlp would download for ``target``.
 
     Runs ``yt-dlp -J`` (metadata only, no download) and inspects the best
@@ -610,6 +621,8 @@ def _probe_ytdlp_codec(python, target, index=1, timeout=30, proxy=None, cookies=
         cmd.extend(["--proxy", proxy])
     if cookies:
         cmd.extend(["--cookies", cookies])
+    if cookies_from_browser:
+        cmd.extend(["--cookies-from-browser", cookies_from_browser])
     env = make_subprocess_env()
     try:
         result = subprocess.run(
@@ -1795,7 +1808,8 @@ def _download_via_cjk_catalogue(
 def cmd_download(
     query, platform="auto", fmt="flac", output=None,
     proxy=None, bitrate=None, index=1, embed_thumbnail=True,
-    no_metadata=False, cookies=None, dry_run=False, json_output=False,
+    no_metadata=False, cookies=None, cookies_from_browser=None,
+    dry_run=False, json_output=False,
     debug=False, slsk_user=None, slsk_pass=None, quick=False,
     fetch_lyrics=True,
 ):
@@ -1812,7 +1826,7 @@ def cmd_download(
     if dry_run:
         plan = _download_plan(
             query, platform, fmt, output, proxy, bitrate, index,
-            embed_thumbnail, no_metadata, cookies,
+            embed_thumbnail, no_metadata, cookies, cookies_from_browser,
         )
         if json_output:
             _emit_json(plan)
@@ -1844,6 +1858,7 @@ def cmd_download(
         debug_log("route: direct url → yt-dlp")
         return _download_direct(py, query, fmt, output, proxy, bitrate,
                                 index, embed_thumbnail, no_metadata, cookies,
+                                cookies_from_browser=cookies_from_browser,
                                 fetch_lyrics=fetch_lyrics)
 
     # A pasted Bilibili link already names the video — download that exact one
@@ -2120,8 +2135,8 @@ def _do_ytmusic_download(
 
 def _do_youtube_download(
     py, query, output, fmt, proxy, bitrate, index, embed_thumbnail,
-    no_metadata=False, cookies=None, before_snapshot=None,
-    fetch_lyrics=True,
+    no_metadata=False, cookies=None, cookies_from_browser=None,
+    before_snapshot=None, fetch_lyrics=True,
 ):
     """Download from YouTube via yt-dlp search + download.
     Proxy is optional — users outside China don't need it.
@@ -2138,6 +2153,8 @@ def _do_youtube_download(
         print("  Proxy    : none (direct connection)")
     if cookies:
         print(f"  Cookies  : {cookies}")
+    if cookies_from_browser:
+        print(f"  Cookies (browser): {cookies_from_browser}")
     print("=" * 60)
     print()
 
@@ -2148,13 +2165,15 @@ def _do_youtube_download(
 
     # Resolve auto format by probing the source codec (metadata only, no download).
     if fmt == "auto":
-        codec = _probe_ytdlp_codec(py, search_query, index=index, proxy=proxy, cookies=cookies)
+        codec = _probe_ytdlp_codec(py, search_query, index=index, proxy=proxy,
+                                   cookies=cookies, cookies_from_browser=cookies_from_browser)
         fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
         print(f"  [auto] {reason}")
 
     ok = _ytdlp_download(
         py, search_query, output, fmt, bitrate, embed_thumbnail,
         proxy=proxy, index=index, cookies=cookies,
+        cookies_from_browser=cookies_from_browser,
     )
     if ok:
         if not no_metadata:
@@ -2196,8 +2215,8 @@ def _do_youtube_download(
 
 def _download_direct(
     py, url, fmt, output, proxy, bitrate,
-    index, embed_thumbnail, no_metadata, cookies, before_snapshot=None,
-    fetch_lyrics=True,
+    index, embed_thumbnail, no_metadata, cookies, cookies_from_browser=None,
+    before_snapshot=None, fetch_lyrics=True,
 ):
     """Download a direct URL (YouTube/SoundCloud/Bandcamp) via yt-dlp.
 
@@ -2228,18 +2247,22 @@ def _download_direct(
         print(f"  Proxy    : {proxy}")
     if cookies:
         print(f"  Cookies  : {cookies}")
+    if cookies_from_browser:
+        print(f"  Cookies (browser): {cookies_from_browser}")
     print("=" * 60)
     print()
 
     # Resolve auto format by probing the source codec (metadata only, no download).
     if fmt == "auto":
-        codec = _probe_ytdlp_codec(py, url, index=index, proxy=proxy, cookies=cookies)
+        codec = _probe_ytdlp_codec(py, url, index=index, proxy=proxy,
+                                   cookies=cookies, cookies_from_browser=cookies_from_browser)
         fmt, bitrate, reason = _resolve_auto_fmt(codec, bitrate)
         print(f"  [auto] {reason}")
 
     ok = _ytdlp_download(
         py, url, output, fmt, bitrate, embed_thumbnail,
         proxy=proxy, index=index, cookies=cookies,
+        cookies_from_browser=cookies_from_browser,
     )
     if ok:
         if not no_metadata:
@@ -2486,6 +2509,8 @@ Examples:
     p_dl.add_argument("--output", default=None, help="Output dir (default: ~/Music/MelodyMine)")
     p_dl.add_argument("--proxy", default=None, help="Proxy for YouTube/Soulseek (e.g. socks5://127.0.0.1:7897)")
     p_dl.add_argument("--cookies", default=None, help="cookies.txt path for YouTube sign-in/bot checks")
+    p_dl.add_argument("--cookies-from-browser", default=None, choices=["chrome", "edge", "firefox", "opera", "brave"],
+                      help="Auto-read cookies from browser (yt-dlp native support)")
     p_dl.add_argument("--bitrate", default=None, help="Audio bitrate (e.g. 320K)")
     p_dl.add_argument("--index", type=int, default=1, help="Search result index (1-based)")
     p_dl.add_argument("--no-thumbnail", action="store_true")
@@ -2540,6 +2565,7 @@ Examples:
             output=args.output,
             proxy=args.proxy,
             cookies=args.cookies,
+            cookies_from_browser=args.cookies_from_browser,
             bitrate=args.bitrate,
             index=args.index,
             embed_thumbnail=not args.no_thumbnail,
