@@ -8,7 +8,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxwYXRoIGQ9Ik0xMiAyTDMgN3YxMGw5IDUgOS01VjdsLTktNXptMCAyLjJMMTguNSA3IDEyIDEwLjIgNS41IDcuMiAxMiA0LjJ6TTUgOC4ybDYgMy4zIDYtMy4zVjE1bC02IDMuMy02LTMuM1Y4LjJ6Ii8+PC9zdmc+)](LICENSE)
 [![Platforms](https://img.shields.io/badge/platforms-10%2B-orange)](#supported-platforms)
-[![Tests](https://img.shields.io/badge/tests-391%20passing-brightgreen?logo=pytest)](tests/)
+[![Tests](https://img.shields.io/badge/tests-408%20passing-brightgreen?logo=pytest)](tests/)
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -137,6 +137,21 @@ python scripts/douban_cover.py --out "D:\ab" "人类简史：从动物到上帝"
 Server-side installation is `scripts/audiobook_install.sh` — Audiobookshelf
 watches its library folder, so dropping the files in `audiobooks/<title>/` is
 picked up without touching the UI.
+
+### Spotify Playlists
+
+Spotify API access is blocked from mainland China. Use the browser-assisted workflow:
+
+```bash
+# 1. Extract playlist metadata via browser MCP (returns JSON with track list)
+# 2. Download each track via yt-dlp + YouTube search
+python scripts/spotify_helper.py download "https://open.spotify.com/playlist/..." --proxy http://127.0.0.1:7897
+
+# Single tracks work directly via Kuwo/Kugou:
+python scripts/music_helper.py download "A2O LITE NEON" --platform kuwo
+```
+
+**Plex integration:** Single tracks go to `Thintsing精选2/` root; playlists create a subfolder `Thintsing精选2/<playlist-name>/` with all tracks tagged with the same album name so Plex groups them correctly.
 
 ### Dry Run & JSON
 
@@ -272,7 +287,7 @@ Download Blinding Lights by The Weeknd
 ## Testing
 
 ```bash
-# Run all 391 tests
+# Run all 408 tests
 python -m pytest tests/ -v
 
 # Run a specific test module
@@ -298,7 +313,7 @@ MelodyMine/
 │   ├── lyrics_client.py       # LRCLIB + Kuwo lyrics — synced + plain (stdlib only)
 │   ├── mbrainz_client.py      # MusicBrainz metadata lookup (stdlib only)
 │   └── cover_client.py        # Cover art downloader (stdlib only)
-├── tests/                     # 391 unit tests (stdlib unittest + mocked HTTP)
+├── tests/                     # 408 unit tests (stdlib unittest + mocked HTTP)
 ├── .github/workflows/ci.yml   # GitHub Actions CI (ruff + pytest)
 ├── SKILL.md                   # AI assistant skill definition
 └── references/                # spotDL CLI & config reference docs
