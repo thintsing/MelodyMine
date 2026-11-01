@@ -32,7 +32,6 @@ JSON format:
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,15 +41,19 @@ SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from melodymine_common import (
-    find_python, find_ffmpeg, make_subprocess_env,
-    run_streaming, set_debug, debug_log, sanitize_filename,
-    DEFAULT_OUTPUT, detect_proxy,
+    DEFAULT_OUTPUT,
+    detect_proxy,
+    find_ffmpeg,
+    find_python,
+    make_subprocess_env,
+    run_streaming,
+    sanitize_filename,
+    set_debug,
 )
 
 try:
     from mutagen import File as MutagenFile
-    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TRCK, TCON, APIC
-    from mutagen.id3 import ID3NoHeaderError
+    from mutagen.id3 import TALB, TIT2, TPE1, TRCK
     MUTAGEN_AVAILABLE = True
 except ImportError:
     MUTAGEN_AVAILABLE = False
@@ -75,7 +78,7 @@ def load_tracks_json(json_path):
     Returns (playlist_name, tracks) or (None, None) on failure.
     """
     try:
-        with open(json_path, 'r', encoding='utf-8') as f:
+        with open(json_path, encoding='utf-8') as f:
             data = json.load(f)
         
         playlist_name = data.get("name", "Unknown Playlist")
@@ -304,7 +307,7 @@ def main():
                 print(f"  [OK] Downloaded (tagging failed): {filepath.name}")
             success_count += 1
         else:
-            print(f"  [FAIL] Download failed")
+            print("  [FAIL] Download failed")
 
         print()
 
