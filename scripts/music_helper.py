@@ -136,6 +136,8 @@ def _build_ytdlp_cmd(
         cmd.extend(["--cookies", cookies])
     if cookies_from_browser:
         cmd.extend(["--cookies-from-browser", cookies_from_browser])
+    # Concurrent fragment downloads for HLS/DASH streams (YouTube)
+    cmd.extend(["--concurrent-fragments", "4"])
     return cmd
 
 
