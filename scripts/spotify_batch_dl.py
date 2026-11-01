@@ -46,7 +46,6 @@ from melodymine_common import (
     check_module,
     detect_proxy,
     find_ffmpeg,
-    find_python,
     make_subprocess_env,
     pip_install,
     run_streaming,
