@@ -162,10 +162,13 @@ EOF
 # 2. Download all tracks (auto-detects proxy, writes ID3 tags)
 python scripts/spotify_batch_dl.py playlist.json
 
-# 3. Download and upload to Plex in one step
+# 3. Download with concurrent threads (faster for large playlists)
+python scripts/spotify_batch_dl.py playlist.json --concurrent 4
+
+# 4. Download and upload to Plex in one step
 python scripts/spotify_batch_dl.py playlist.json --upload-plex
 
-# 4. Specify format and output directory
+# 5. Specify format and output directory
 python scripts/spotify_batch_dl.py playlist.json --format flac --output "D:\Music\Playlist"
 
 # Single tracks work directly via Kuwo/Kugou:
