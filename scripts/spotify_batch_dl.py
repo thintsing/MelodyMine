@@ -34,6 +34,7 @@ import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 # Add scripts dir to path so we can import melodymine modules
@@ -42,10 +43,12 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from melodymine_common import (
     DEFAULT_OUTPUT,
+    check_module,
     detect_proxy,
     find_ffmpeg,
     find_python,
     make_subprocess_env,
+    pip_install,
     run_streaming,
     sanitize_filename,
     set_debug,
@@ -65,9 +68,19 @@ REQUIRED_PACKAGES = ["yt-dlp", "requests", "pysocks", "imageio-ffmpeg"]
 
 def ensure_deps():
     """Ensure all dependencies are available. Returns (python, yt_dlp_ver, ffmpeg_path) or (None, None, None)."""
-    py = find_python("yt_dlp", REQUIRED_PACKAGES)
-    if not py:
-        return None, None, None
+    # Use the Python running this script, not a different one
+    py = sys.executable
+    
+    # Check if yt-dlp is installed, if not install it
+    if not check_module(py, "yt_dlp"):
+        print("  Auto-installing: yt-dlp")
+        pip_install(py, ["yt-dlp", "requests", "pysocks"])
+    
+    # Check if imageio-ffmpeg is installed, if not install it
+    if not check_module(py, "imageio_ffmpeg"):
+        print("  Auto-installing: imageio-ffmpeg (bundled ffmpeg binary)")
+        pip_install(py, ["imageio-ffmpeg"])
+    
     ff = find_ffmpeg(py)
     return py, None, ff
 
@@ -104,7 +117,7 @@ def load_tracks_json(json_path):
 
 
 def download_track(artist, title, output_dir, fmt="mp3", bitrate="320K",
-                   proxy=None, cookies_from_browser=None, python_exe=None):
+                   proxy=None, cookies_from_browser=None, python_exe=None, ffmpeg_exe=None):
     """Download a single track via yt-dlp YouTube search.
 
     Returns the path to the downloaded file, or None on failure.
@@ -115,7 +128,8 @@ def download_track(artist, title, output_dir, fmt="mp3", bitrate="320K",
         print("  [!] No Python with yt-dlp found. Run 'setup' first.")
         return None
 
-    ffmpeg_exe = find_ffmpeg(python_exe)
+    if not ffmpeg_exe:
+        ffmpeg_exe = find_ffmpeg(python_exe)
     if not ffmpeg_exe:
         print("  [!] ffmpeg not found.")
         return None
@@ -236,6 +250,8 @@ def main():
                         help="Plex target directory")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be downloaded without downloading")
+    parser.add_argument("--concurrent", "-j", type=int, default=4,
+                        help="Number of parallel downloads (default: 4)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
@@ -281,35 +297,78 @@ def main():
         print(f"\nTotal: {len(tracks)} tracks")
         sys.exit(0)
 
-    # Download each track
+    # Download tracks (concurrently if --concurrent > 1)
+    python_exe, _, ffmpeg_exe = ensure_deps()
     success_count = 0
-    python_exe, _, _ = ensure_deps()
     
-    for i, track in enumerate(tracks, 1):
-        artist = track["artist"]
-        title = track["title"]
-
-        print(f"[{i}/{len(tracks)}] {artist} - {title}")
-
+    def download_single_track(track_idx, track_data):
+        """Download and tag a single track. Returns (track_idx, success, filepath, tagged)."""
+        artist = track_data["artist"]
+        title = track_data["title"]
+        
         filepath = download_track(
             artist, title, output_dir,
             fmt=args.format, bitrate=args.bitrate,
             proxy=proxy,
             cookies_from_browser=args.cookies_from_browser,
             python_exe=python_exe,
+            ffmpeg_exe=ffmpeg_exe,
         )
-
+        
         if filepath:
-            # Write ID3 tags
-            if write_id3_tags(filepath, artist, title, playlist_name, i):
-                print(f"  [OK] Downloaded and tagged: {filepath.name}")
-            else:
-                print(f"  [OK] Downloaded (tagging failed): {filepath.name}")
-            success_count += 1
+            tagged = write_id3_tags(filepath, artist, title, playlist_name, track_idx)
+            return (track_idx, True, filepath, tagged)
         else:
-            print("  [FAIL] Download failed")
-
+            return (track_idx, False, None, False)
+    
+    if args.concurrent > 1:
+        # Parallel downloads
+        print(f"[DOWNLOAD] Starting {args.concurrent} parallel downloads...")
         print()
+        
+        with ThreadPoolExecutor(max_workers=args.concurrent) as executor:
+            future_to_idx = {
+                executor.submit(download_single_track, i, track): i
+                for i, track in enumerate(tracks, 1)
+            }
+            
+            for future in as_completed(future_to_idx):
+                track_idx, success, filepath, tagged = future.result()
+                track = tracks[track_idx - 1]
+                artist = track["artist"]
+                title = track["title"]
+                
+                if success:
+                    if tagged:
+                        print(f"[{track_idx}/{len(tracks)}] [OK] {artist} - {title}")
+                        print(f"         Tagged: {filepath.name}")
+                    else:
+                        print(f"[{track_idx}/{len(tracks)}] [OK] {artist} - {title}")
+                        print(f"         (tagging failed): {filepath.name}")
+                    success_count += 1
+                else:
+                    print(f"[{track_idx}/{len(tracks)}] [FAIL] {artist} - {title}")
+                print()
+    else:
+        # Sequential downloads
+        for i, track in enumerate(tracks, 1):
+            artist = track["artist"]
+            title = track["title"]
+    
+            print(f"[{i}/{len(tracks)}] {artist} - {title}")
+    
+            track_idx, success, filepath, tagged = download_single_track(i, track)
+    
+            if success:
+                if tagged:
+                    print(f"  [OK] Downloaded and tagged: {filepath.name}")
+                else:
+                    print(f"  [OK] Downloaded (tagging failed): {filepath.name}")
+                success_count += 1
+            else:
+                print("  [FAIL] Download failed")
+    
+            print()
 
     print("=" * 60)
     print(f"[DONE] {success_count}/{len(tracks)} tracks downloaded to {output_dir}")
