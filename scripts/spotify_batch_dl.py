@@ -34,6 +34,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -41,6 +42,13 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+from config import (
+    PLEX_DIR,
+    PLEX_HOST,
+    PLEX_KEY,
+    PLEX_PORT,
+    PLEX_USER,
+)
 from melodymine_common import (
     DEFAULT_OUTPUT,
     detect_proxy,
@@ -180,9 +188,9 @@ def write_id3_tags(filepath, artist, title, album, track_num):
         return False
 
 
-def upload_to_plex(local_dir, plex_host="112.112.10.34", plex_port=4422,
-                   plex_user="root", plex_key="~/.ssh/melodymine_plex",
-                   plex_dir="/home/media/music/Thintsing精选2"):
+def upload_to_plex(local_dir, plex_host=PLEX_HOST, plex_port=PLEX_PORT,
+                   plex_user=PLEX_USER, plex_key=PLEX_KEY,
+                   plex_dir=PLEX_DIR):
     """Upload a local directory to Plex server via scp."""
     print(f"\n[UPLOAD] Copying {local_dir} to Plex...")
 
@@ -219,9 +227,9 @@ def main():
                         help="Extract cookies from browser for yt-dlp")
     parser.add_argument("--upload-plex", action="store_true",
                         help="Upload to Plex server after download")
-    parser.add_argument("--plex-host", default="112.112.10.34", help="Plex server host")
-    parser.add_argument("--plex-port", type=int, default=4422, help="Plex server SSH port")
-    parser.add_argument("--plex-dir", default="/home/media/music/Thintsing精选2",
+    parser.add_argument("--plex-host", default=PLEX_HOST, help="Plex server host")
+    parser.add_argument("--plex-port", type=int, default=PLEX_PORT, help="Plex server SSH port")
+    parser.add_argument("--plex-dir", default=PLEX_DIR,
                         help="Plex target directory")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be downloaded without downloading")
@@ -275,6 +283,15 @@ def main():
     # Download tracks (concurrently if --concurrent > 1)
     python_exe, _, ffmpeg_exe = ensure_deps()
     success_count = 0
+    print_lock = threading.Lock() if args.concurrent > 1 else None
+    
+    def safe_print(*args, **kwargs):
+        """Thread-safe print for concurrent downloads."""
+        if print_lock:
+            with print_lock:
+                print(*args, **kwargs)
+        else:
+            print(*args, **kwargs)
     
     def download_single_track(track_idx, track_data):
         """Download and tag a single track. Returns (track_idx, success, filepath, tagged)."""
@@ -315,15 +332,15 @@ def main():
                 
                 if success:
                     if tagged:
-                        print(f"[{track_idx}/{len(tracks)}] [OK] {artist} - {title}")
-                        print(f"         Tagged: {filepath.name}")
+                        safe_print(f"[{track_idx}/{len(tracks)}] [OK] {artist} - {title}")
+                        safe_print(f"         Tagged: {filepath.name}")
                     else:
-                        print(f"[{track_idx}/{len(tracks)}] [OK] {artist} - {title}")
-                        print(f"         (tagging failed): {filepath.name}")
+                        safe_print(f"[{track_idx}/{len(tracks)}] [OK] {artist} - {title}")
+                        safe_print(f"         (tagging failed): {filepath.name}")
                     success_count += 1
                 else:
-                    print(f"[{track_idx}/{len(tracks)}] [FAIL] {artist} - {title}")
-                print()
+                    safe_print(f"[{track_idx}/{len(tracks)}] [FAIL] {artist} - {title}")
+                safe_print()
     else:
         # Sequential downloads
         for i, track in enumerate(tracks, 1):
@@ -350,6 +367,12 @@ def main():
 
     # Upload to Plex if requested
     if args.upload_plex and success_count > 0:
+        if not args.plex_host or not args.plex_dir:
+            print("\n[ERROR] Plex upload requires configuration:")
+            print("  Set environment variables: MELODYMINE_PLEX_HOST and MELODYMINE_PLEX_DIR")
+            print("  Or use CLI arguments: --plex-host and --plex-dir")
+            sys.exit(1)
+        
         upload_to_plex(
             output_dir,
             plex_host=args.plex_host,

@@ -38,6 +38,11 @@ desktop.ini
 cookies.txt
 *.cookies
 
+# Environment variables (sensitive)
+.env
+.env.local
+.env.*.local
+
 # Logs
 *.log
 

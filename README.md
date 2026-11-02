@@ -165,7 +165,7 @@ python scripts/spotify_batch_dl.py playlist.json
 # 3. Download with concurrent threads (faster for large playlists)
 python scripts/spotify_batch_dl.py playlist.json --concurrent 4
 
-# 4. Download and upload to Plex in one step
+# 4. Download and upload to Plex in one step (requires env vars, see below)
 python scripts/spotify_batch_dl.py playlist.json --upload-plex
 
 # 5. Specify format and output directory
@@ -175,7 +175,22 @@ python scripts/spotify_batch_dl.py playlist.json --format flac --output "D:\Musi
 python scripts/music_helper.py download "A2O LITE NEON" --platform kuwo
 ```
 
-**Plex integration:** Single tracks go to `Thintsing精选2/` root; playlists create a subfolder `Thintsing精选2/<playlist-name>/` with all tracks tagged with the same album name so Plex groups them correctly.
+**Plex integration:** Single tracks go to the configured Plex directory root; playlists create a subfolder `<playlist-name>/` with all tracks tagged with the same album name so Plex groups them correctly.
+
+**Plex configuration:** Set environment variables before using `--upload-plex`:
+
+```bash
+# Required
+export MELODYMINE_PLEX_HOST="your-plex-server.com"
+export MELODYMINE_PLEX_DIR="/path/to/music"
+
+# Optional (defaults shown)
+export MELODYMINE_PLEX_PORT="22"
+export MELODYMINE_PLEX_USER="your-username"
+export MELODYMINE_PLEX_KEY="~/.ssh/id_rsa"
+```
+
+Or use CLI arguments: `--plex-host`, `--plex-port`, `--plex-dir`.
 
 ### Dry Run & JSON
 
