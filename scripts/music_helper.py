@@ -44,10 +44,10 @@ from melodymine_common import (
     debug_log,
     derive_query_from_filename,
     enable_utf8_stdio,
+    ensure_deps,
     extract_bilibili_bvid,
     extract_netease_song_id,
     find_ffmpeg,
-    find_python,
     is_accompaniment,
     is_bandcamp_url,
     is_bilibili_url,
@@ -71,23 +71,6 @@ from melodymine_common import (
 # pip packages required for full functionality
 REQUIRED_PACKAGES = ["yt-dlp", "requests", "pysocks"]
 OPTIONAL_PACKAGES = ["imageio-ffmpeg", "spotdl"]
-
-
-def _find_music_python():
-    """Find a Python with yt-dlp (auto-installs deps + imageio-ffmpeg)."""
-    return find_python("yt_dlp", REQUIRED_PACKAGES + ["imageio-ffmpeg"])
-
-
-def ensure_deps():
-    """Ensure all dependencies are available. Called at the start of every command.
-
-    Returns (python, yt_dlp_ver, ffmpeg_path) or (None, None, None).
-    """
-    py, ver = _find_music_python()
-    if not py:
-        return None, None, None
-    ff = find_ffmpeg(py)
-    return py, ver, ff
 
 
 def has_spotdl(python):
@@ -680,7 +663,7 @@ def _resolve_auto_fmt(codec, user_bitrate):
 def _bili_api_download(bvid, output, fmt="flac", bitrate=None, python=None):
     """Download audio directly from Bilibili's playurl API, bypassing yt-dlp entirely."""
     if python is None:
-        python, _ = _find_music_python()
+        python, _, _ = ensure_deps()
     if not python:
         return False
     import urllib.request
@@ -748,12 +731,13 @@ def cmd_setup():
 
     # Step 1: Find Python via the shared discovery (auto-installs deps)
     print("[1/4] Finding Python interpreter + installing dependencies...")
-    py, ytdlp_ver = _find_music_python()
+    py, _, ff = ensure_deps()
     if not py:
         print("  [FAIL] No Python found on this system.")
         print("         Install Python 3.10+ from https://python.org")
         return False
     print(f"  Found: {py}")
+    ytdlp_ver = check_module(py, "yt_dlp")
     if ytdlp_ver:
         print(f"  yt-dlp: v{ytdlp_ver}")
     print()

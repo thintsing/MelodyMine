@@ -518,6 +518,41 @@ def find_ffmpeg(python=None):
     return None
 
 
+# ─── Dependency Management ───────────────────────────────────────────────
+
+# Default packages required for full functionality
+MELODYMINE_PACKAGES = ["yt-dlp", "requests", "pysocks", "imageio-ffmpeg"]
+
+
+def ensure_deps(packages=None):
+    """Ensure all dependencies are available.
+
+    Uses the Python running this script (sys.executable) to avoid race
+    conditions when multiple processes try to install simultaneously.
+
+    Args:
+        packages: Optional list of packages to check/install.
+                  Defaults to MELODYMINE_PACKAGES.
+
+    Returns:
+        (python_path, None, ffmpeg_path) or (None, None, None) on failure.
+    """
+    if packages is None:
+        packages = MELODYMINE_PACKAGES
+
+    py = sys.executable
+
+    # Check and install required packages
+    for pkg in packages:
+        module_name = pkg.replace("-", "_")
+        if not check_module(py, module_name):
+            print(f"  Auto-installing: {pkg}")
+            pip_install(py, [pkg])
+
+    ff = find_ffmpeg(py)
+    return py, None, ff
+
+
 _DURATION_RE = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _AUDIO_CODEC_RE = re.compile(r"Audio:\s*([A-Za-z0-9_]+)")
 

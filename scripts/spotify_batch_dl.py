@@ -43,11 +43,10 @@ sys.path.insert(0, str(SCRIPT_DIR))
 
 from melodymine_common import (
     DEFAULT_OUTPUT,
-    check_module,
     detect_proxy,
+    ensure_deps,
     find_ffmpeg,
     make_subprocess_env,
-    pip_install,
     run_streaming,
     sanitize_filename,
     set_debug,
@@ -59,29 +58,6 @@ try:
     MUTAGEN_AVAILABLE = True
 except ImportError:
     MUTAGEN_AVAILABLE = False
-
-
-# pip packages required for full functionality
-REQUIRED_PACKAGES = ["yt-dlp", "requests", "pysocks", "imageio-ffmpeg"]
-
-
-def ensure_deps():
-    """Ensure all dependencies are available. Returns (python, yt_dlp_ver, ffmpeg_path) or (None, None, None)."""
-    # Use the Python running this script, not a different one
-    py = sys.executable
-    
-    # Check if yt-dlp is installed, if not install it
-    if not check_module(py, "yt_dlp"):
-        print("  Auto-installing: yt-dlp")
-        pip_install(py, ["yt-dlp", "requests", "pysocks"])
-    
-    # Check if imageio-ffmpeg is installed, if not install it
-    if not check_module(py, "imageio_ffmpeg"):
-        print("  Auto-installing: imageio-ffmpeg (bundled ffmpeg binary)")
-        pip_install(py, ["imageio-ffmpeg"])
-    
-    ff = find_ffmpeg(py)
-    return py, None, ff
 
 
 def load_tracks_json(json_path):
